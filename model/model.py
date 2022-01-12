@@ -59,8 +59,7 @@ class QuestionAnsweringModel(TransformersModel):
         for i, example_index in enumerate(ids):
             start_logits = batch_start_logits[i]
             end_logits = batch_end_logits[i]
-            eval_feature = self.trainer.datamodule.valid_features[example_index]
-            unique_id = eval_feature.unique_id
+            unique_id = self.trainer.datamodule.valid_features[example_index].unique_id
             raw_result = RawResult(
                 unique_id=unique_id,
                 start_logits=start_logits,
@@ -93,7 +92,10 @@ class QuestionAnsweringModel(TransformersModel):
 
     def test_epoch_end(self, all_outputs: List) -> None:
         r""" Evaluate a list of predictions for each test dataloader. """
-        for i, outputs in enumerate(all_outputs):
+        if isinstance(all_outputs[0], dict):
+            all_outputs = [all_outputs]
+
+        for dataloader_idx, outputs in enumerate(all_outputs):
             ids = torch.cat([o['ids'] for o in outputs], dim=0)
             batch_start_logits = torch.cat([o['batch_start_logits'] for o in outputs], dim=0)
             batch_end_logits = torch.cat([o['batch_end_logits'] for o in outputs], dim=0)
@@ -108,8 +110,7 @@ class QuestionAnsweringModel(TransformersModel):
             for i, example_index in enumerate(ids):
                 start_logits = batch_start_logits[i]
                 end_logits = batch_end_logits[i]
-                eval_feature = self.trainer.datamodule.valid_features[i][example_index]
-                unique_id = eval_feature.unique_id
+                unique_id = self.trainer.datamodule.test_features[dataloader_idx][example_index].unique_id
                 raw_result = RawResult(
                     unique_id=unique_id,
                     start_logits=start_logits,
@@ -118,14 +119,14 @@ class QuestionAnsweringModel(TransformersModel):
                 all_results.append(raw_result)
 
             preds, _ = make_predictions(
-                self.trainer.datamodule.valid_examples[i],
-                self.trainer.datamodule.valid_features[i],
+                self.trainer.datamodule.test_examples[dataloader_idx],
+                self.trainer.datamodule.test_features[dataloader_idx],
                 all_results,
                 self.hyperparameters.n_best_size,
                 self.hyperparameters.max_answer_length,
             )
 
-            exact_raw, f1_raw = get_raw_scores(self.trainer.datamodule.valid_original, preds)
+            exact_raw, f1_raw = get_raw_scores(self.trainer.datamodule.test_original[dataloader_idx], preds)
             result = make_eval_dict(exact_raw, f1_raw)
 
             self.log(f'test/{i}/em', result['exact'], prog_bar=True, on_epoch=True)
@@ -142,8 +143,11 @@ class QuestionAnsweringModel(TransformersModel):
 
     def predict_epoch_end(self, all_outputs: List) -> None:
         r""" Evaluate a list of predictions for each predict dataloader. """
+        if isinstance(all_outputs[0], dict):
+            all_outputs = [all_outputs]
+
         res = []
-        for i, outputs in enumerate(all_outputs):
+        for dataloader_idx, outputs in enumerate(all_outputs):
             ids = torch.cat([o['ids'] for o in outputs], dim=0)
             batch_start_logits = torch.cat([o['batch_start_logits'] for o in outputs], dim=0)
             batch_end_logits = torch.cat([o['batch_end_logits'] for o in outputs], dim=0)
@@ -158,8 +162,7 @@ class QuestionAnsweringModel(TransformersModel):
             for i, example_index in enumerate(ids):
                 start_logits = batch_start_logits[i]
                 end_logits = batch_end_logits[i]
-                predict_feature = self.trainer.datamodule.predict_features[i][example_index]
-                unique_id = predict_feature.unique_id
+                unique_id = self.trainer.datamodule.predict_features[dataloader_idx][example_index].unique_id
                 raw_result = RawResult(
                     unique_id=unique_id,
                     start_logits=start_logits,
@@ -168,18 +171,19 @@ class QuestionAnsweringModel(TransformersModel):
                 all_results.append(raw_result)
 
             preds, nbest_preds = make_predictions(
-                self.trainer.datamodule.predict_examples[i],
-                self.trainer.datamodule.predict_features[i],
+                self.trainer.datamodule.predict_examples[dataloader_idx],
+                self.trainer.datamodule.predict_features[dataloader_idx],
                 all_results,
                 self.hyperparameters.n_best_size,
                 self.hyperparameters.max_answer_length,
             )
 
-            exact_raw, f1_raw = get_raw_scores(self.trainer.datamodule.predict_original, preds)
+            exact_raw, f1_raw = get_raw_scores(self.trainer.datamodule.predict_original[dataloader_idx], preds)
             result = make_eval_dict(exact_raw, f1_raw)
 
             self.log(f'predict/{i}/em', result['exact'], prog_bar=True, on_epoch=True)
             self.log(f'predict/{i}/f1', result['f1'], prog_bar=True, on_epoch=True)
 
             res.append(result, preds, nbest_preds)
+
         return res
