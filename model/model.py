@@ -91,43 +91,45 @@ class QuestionAnsweringModel(TransformersModel):
         batch_start_logits, batch_end_logits = results.start_logits, results.end_logits
         return {'ids': ids, 'batch_start_logits': batch_start_logits, 'batch_end_logits': batch_end_logits}
 
-    def test_epoch_end(self, outputs: List) -> None:
-        ids = torch.cat([o['ids'] for o in outputs], dim=0)
-        batch_start_logits = torch.cat([o['batch_start_logits'] for o in outputs], dim=0)
-        batch_end_logits = torch.cat([o['batch_end_logits'] for o in outputs], dim=0)
+    def test_epoch_end(self, all_outputs: List) -> None:
+        r""" Evaluate a list of predictions for each test dataloader. """
+        for i, outputs in enumerate(all_outputs):
+            ids = torch.cat([o['ids'] for o in outputs], dim=0)
+            batch_start_logits = torch.cat([o['batch_start_logits'] for o in outputs], dim=0)
+            batch_end_logits = torch.cat([o['batch_end_logits'] for o in outputs], dim=0)
 
-        ids = self.all_gather(ids, sync_grads=False).view(-1).detach().cpu().tolist()
-        batch_start_logits = self.all_gather(batch_start_logits, sync_grads=False)
-        batch_end_logits = self.all_gather(batch_end_logits, sync_grads=False)
-        batch_start_logits = batch_start_logits.view(-1, batch_start_logits.shape[-1]).detach().cpu().tolist()
-        batch_end_logits = batch_end_logits.view(-1, batch_end_logits.shape[-1]).detach().cpu().tolist()
+            ids = self.all_gather(ids, sync_grads=False).view(-1).detach().cpu().tolist()
+            batch_start_logits = self.all_gather(batch_start_logits, sync_grads=False)
+            batch_end_logits = self.all_gather(batch_end_logits, sync_grads=False)
+            batch_start_logits = batch_start_logits.view(-1, batch_start_logits.shape[-1]).detach().cpu().tolist()
+            batch_end_logits = batch_end_logits.view(-1, batch_end_logits.shape[-1]).detach().cpu().tolist()
 
-        all_results = []
-        for i, example_index in enumerate(ids):
-            start_logits = batch_start_logits[i]
-            end_logits = batch_end_logits[i]
-            eval_feature = self.trainer.datamodule.valid_features[example_index]
-            unique_id = eval_feature.unique_id
-            raw_result = RawResult(
-                unique_id=unique_id,
-                start_logits=start_logits,
-                end_logits=end_logits
+            all_results = []
+            for i, example_index in enumerate(ids):
+                start_logits = batch_start_logits[i]
+                end_logits = batch_end_logits[i]
+                eval_feature = self.trainer.datamodule.valid_features[i][example_index]
+                unique_id = eval_feature.unique_id
+                raw_result = RawResult(
+                    unique_id=unique_id,
+                    start_logits=start_logits,
+                    end_logits=end_logits
+                )
+                all_results.append(raw_result)
+
+            preds, _ = make_predictions(
+                self.trainer.datamodule.valid_examples[i],
+                self.trainer.datamodule.valid_features[i],
+                all_results,
+                self.hyperparameters.n_best_size,
+                self.hyperparameters.max_answer_length,
             )
-            all_results.append(raw_result)
 
-        preds, _ = make_predictions(
-            self.trainer.datamodule.valid_examples,
-            self.trainer.datamodule.valid_features,
-            all_results,
-            self.hyperparameters.n_best_size,
-            self.hyperparameters.max_answer_length,
-        )
+            exact_raw, f1_raw = get_raw_scores(self.trainer.datamodule.valid_original, preds)
+            result = make_eval_dict(exact_raw, f1_raw)
 
-        exact_raw, f1_raw = get_raw_scores(self.trainer.datamodule.valid_original, preds)
-        result = make_eval_dict(exact_raw, f1_raw)
-
-        self.log('test/em', result['exact'], prog_bar=True, on_epoch=True)
-        self.log('test/f1', result['f1'], prog_bar=True, on_epoch=True)
+            self.log(f'test/{i}/em', result['exact'], prog_bar=True, on_epoch=True)
+            self.log(f'test/{i}/f1', result['f1'], prog_bar=True, on_epoch=True)
 
     def predict_step(self, batch, *args):
         input_ids, input_mask, segment_ids, ids = (
@@ -138,42 +140,46 @@ class QuestionAnsweringModel(TransformersModel):
         batch_start_logits, batch_end_logits = results.start_logits, results.end_logits
         return {'ids': ids, 'batch_start_logits': batch_start_logits, 'batch_end_logits': batch_end_logits}
 
-    def predict_epoch_end(self, outputs: List) -> None:
-        ids = torch.cat([o['ids'] for o in outputs], dim=0)
-        batch_start_logits = torch.cat([o['batch_start_logits'] for o in outputs], dim=0)
-        batch_end_logits = torch.cat([o['batch_end_logits'] for o in outputs], dim=0)
+    def predict_epoch_end(self, all_outputs: List) -> None:
+        r""" Evaluate a list of predictions for each predict dataloader. """
+        res = []
+        for i, outputs in enumerate(all_outputs):
+            ids = torch.cat([o['ids'] for o in outputs], dim=0)
+            batch_start_logits = torch.cat([o['batch_start_logits'] for o in outputs], dim=0)
+            batch_end_logits = torch.cat([o['batch_end_logits'] for o in outputs], dim=0)
 
-        ids = self.all_gather(ids, sync_grads=False).view(-1).detach().cpu().tolist()
-        batch_start_logits = self.all_gather(batch_start_logits, sync_grads=False)
-        batch_end_logits = self.all_gather(batch_end_logits, sync_grads=False)
-        batch_start_logits = batch_start_logits.view(-1, batch_start_logits.shape[-1]).detach().cpu().tolist()
-        batch_end_logits = batch_end_logits.view(-1, batch_end_logits.shape[-1]).detach().cpu().tolist()
+            ids = self.all_gather(ids, sync_grads=False).view(-1).detach().cpu().tolist()
+            batch_start_logits = self.all_gather(batch_start_logits, sync_grads=False)
+            batch_end_logits = self.all_gather(batch_end_logits, sync_grads=False)
+            batch_start_logits = batch_start_logits.view(-1, batch_start_logits.shape[-1]).detach().cpu().tolist()
+            batch_end_logits = batch_end_logits.view(-1, batch_end_logits.shape[-1]).detach().cpu().tolist()
 
-        all_results = []
-        for i, example_index in enumerate(ids):
-            start_logits = batch_start_logits[i]
-            end_logits = batch_end_logits[i]
-            eval_feature = self.trainer.datamodule.valid_features[example_index]
-            unique_id = eval_feature.unique_id
-            raw_result = RawResult(
-                unique_id=unique_id,
-                start_logits=start_logits,
-                end_logits=end_logits
+            all_results = []
+            for i, example_index in enumerate(ids):
+                start_logits = batch_start_logits[i]
+                end_logits = batch_end_logits[i]
+                predict_feature = self.trainer.datamodule.predict_features[i][example_index]
+                unique_id = predict_feature.unique_id
+                raw_result = RawResult(
+                    unique_id=unique_id,
+                    start_logits=start_logits,
+                    end_logits=end_logits
+                )
+                all_results.append(raw_result)
+
+            preds, nbest_preds = make_predictions(
+                self.trainer.datamodule.predict_examples[i],
+                self.trainer.datamodule.predict_features[i],
+                all_results,
+                self.hyperparameters.n_best_size,
+                self.hyperparameters.max_answer_length,
             )
-            all_results.append(raw_result)
 
-        preds, nbest_preds = make_predictions(
-            self.trainer.datamodule.eval_examples,
-            self.trainer.datamodule.eval_features,
-            all_results,
-            self.hyperparameters.n_best_size,
-            self.hyperparameters.max_answer_length,
-        )
+            exact_raw, f1_raw = get_raw_scores(self.trainer.datamodule.predict_original, preds)
+            result = make_eval_dict(exact_raw, f1_raw)
 
-        exact_raw, f1_raw = get_raw_scores(self.trainer.datamodule.eval_original, preds)
-        result = make_eval_dict(exact_raw, f1_raw)
+            self.log(f'predict/{i}/em', result['exact'], prog_bar=True, on_epoch=True)
+            self.log(f'predict/{i}/f1', result['f1'], prog_bar=True, on_epoch=True)
 
-        self.log('predict/em', result['exact'], prog_bar=True, on_epoch=True)
-        self.log('predict/f1', result['f1'], prog_bar=True, on_epoch=True)
-
-        return result, preds, nbest_preds
+            res.append(result, preds, nbest_preds)
+        return res

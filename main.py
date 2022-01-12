@@ -35,7 +35,6 @@ logger = logging.getLogger(__name__)
 
 def main(hyperparameters):
 
-    os.makedirs(hyperparameters.cache_dir, exist_ok=True)
     os.environ['TOKENIZERS_PARALLELISM'] = "true"
     tokenizer = AutoTokenizer.from_pretrained(hyperparameters.pre_trained_model)
 
@@ -126,15 +125,15 @@ def main(hyperparameters):
             raise ValueError("Predicting on more than 1 GPU may give results in different order.")
 
         predictions = trainer.predict(model, datamodule=datamodule, return_predictions=True)
-        result, preds, nbest_preds = zip(*model.predict_epoch_end(predictions))
+        res = model.predict_epoch_end(predictions)
 
-        basepath = os.path.join(hyperparameters.output_dir, hyperparameters.predictions_dir, hyperparameters.name)
-
-        with open(os.path.join(basepath, PRED_FILE), "w") as writer:
-            writer.write(json.dumps(preds, indent=4) + "\n")
-        with open(os.path.join(basepath, TEST_FILE), "w") as writer:
-            for key in sorted(result.keys()):
-                writer.write("%s = %s\n" % (key, str(result[key])))
+        for i, (result, preds, _) in enumerate(res):
+            basepath = os.path.join(hyperparameters.output_dir, hyperparameters.predictions_dir, f'{hyperparameters.name}_{i}')
+            with open(os.path.join(basepath, PRED_FILE), "w") as writer:
+                writer.write(json.dumps(preds, indent=4) + "\n")
+            with open(os.path.join(basepath, TEST_FILE), "w") as writer:
+                for key in sorted(result.keys()):
+                    writer.write("%s = %s\n" % (key, str(result[key])))
 
 
 if __name__ == "__main__":
@@ -166,32 +165,13 @@ if __name__ == "__main__":
     parser.add_argument("--name", type=str, required=True, help="Run name")
 
     # I/O folders
-    parser.add_argument('--cache_dir', type=str, default=os.path.join(os.path.expanduser('~'), ".cache", "mrqa-lightning"), required=False, help="Cache folder for temporary files")
     parser.add_argument('--predictions_dir', type=str, default="predictions", required=False, help="Predictions folder")
     parser.add_argument("--pre_trained_model", default=None, type=str, required=True)
-    parser.add_argument("--train_file", default=None, type=str, nargs='+')
-    parser.add_argument("--dev_file", default=None, type=str)
-    parser.add_argument("--test_file", default=None, type=str)
-    parser.add_argument("--predict_file", default=None, type=str)
-    parser.add_argument("--max_sequence_length", default=512, type=int,
-                        help="The maximum total input sequence length after WordPiece tokenization. Sequences "
-                                "longer than this will be truncated, and sequences shorter than this will be padded.")
-    parser.add_argument("--doc_stride", default=128, type=int,
-                        help="When splitting up a long document into chunks, "
-                                "how much stride to take between chunks.")
-    parser.add_argument("--max_query_length", default=64, type=int,
-                        help="The maximum number of tokens for the question. Questions longer than this will "
-                                "be truncated to this length.")
     parser.add_argument("--n_best_size", default=20, type=int,
                         help="The total number of n-best predictions to generate in the nbest_predictions.json "
                                 "output file.")
-    parser.add_argument("--max_answer_length", default=30, type=int,
-                        help="The maximum length of an answer that can be generated. "
-                                "This is needed because the start "
-                                "and end predictions are not conditioned on one another.")
     parser.add_argument('--seed', type=int, default=1337,
                         help="random seed for initialization")
-    parser.add_argument('--preprocessing_workers', default=16, type=int, help="Preprocessing processes to use to prepare the dataset")
 
     # get NameSpace of paramters
     hyperparameters = parser.parse_args()
