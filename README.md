@@ -54,7 +54,7 @@ python main.py \
     --num_workers 8 \
 ```
 
-or maybe on many GPUs my simply setting `--accelerator gpu --strategy ddp --devices 8` if you have a machine with 8 GPUs.
+If you wans to use many (say 8) GPUs, set `--accelerator gpu --strategy ddp --devices 8`.
 Please refer to (pytorch-lighting doc)[https://pytorch-lightning.readthedocs.io/en/stable/] for the training hyperparameters.
 
 Another example with multiple GPUs and many train files
