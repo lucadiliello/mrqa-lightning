@@ -164,7 +164,6 @@ class QuestionAnsweringDataModule(SuperDataModule):
                 )
                 for examples in test_examples
             ]
-
             torch.save((test_original, test_examples, test_features), self.test_cache)
 
         # predict data
@@ -231,13 +230,12 @@ class QuestionAnsweringDataModule(SuperDataModule):
                         ) for i, a in enumerate(test_features)
                     ])
                     self.test_dataset.append(dataset)
-
                 logger.info(f"Test datasets have length {[len(d) for d in self.test_dataset]}")
 
         elif stage == TrainerFn.PREDICTING.value:
             if self.do_predict():
                 self.predict_original, self.predict_examples, self.predict_features = torch.load(self.predict_cache)
-                self.pedict_dataset = []
+                self.predict_dataset = []
                 for predict_features in self.predict_features:
                     dataset = MapDataset([
                         dict(
@@ -247,8 +245,8 @@ class QuestionAnsweringDataModule(SuperDataModule):
                             segment_ids=a.segment_ids,
                         ) for i, a in enumerate(predict_features)
                     ])
-                    self.pedict_dataset.append(dataset)
-                logger.info(f"Predict datasets have length {[len(d) for d in self.pedict_dataset]}")
+                    self.predict_dataset.append(dataset)
+                logger.info(f"Predict datasets have length {[len(d) for d in self.predict_dataset]}")
 
     def train_dataloader(self):
         r""" Return the training dataloader. """
