@@ -6,6 +6,7 @@ Easily run the MRQA test suite with any `*ForQuestionAnswering` model from `tran
 `pytorch-lightning` will manage all the hardware resources, allowing you to run on CPU, GPU,
 Multi GPU and Multi Node - Multi GPU without changing a single line of code.
 
+
 ## Advantages
 
 - Updated to use latest versions of `pytorch-lightning` and `transformers`
@@ -13,6 +14,8 @@ Multi GPU and Multi Node - Multi GPU without changing a single line of code.
 - Much faster datasets preparation using multiprocessing
 - Much easier training on different machines thanks to `pytorch-lightning`
 - Checkpointing and better logging
+- `datasets` library really reduces memory usage
+
 
 ## Prepare environment
 
@@ -119,3 +122,7 @@ python main.py --help
 - `max_steps` set the max number of steps instead of `max_epochs`
 - use `test_datasets` or `predict_datasets` for testing only or for creating predictions
 - predictions are placed into the `--prediction_dir` folder
+
+
+## TODO
+[X] Tokenization that is independent of the used model
