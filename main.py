@@ -2,7 +2,6 @@
 # Adapterd by Luca Di Liello from https://github.com/facebookresearch/SpanBERT/blob/0670d8b6a38f6714b85ea7a033f16bd8cc162676/code/run_mrqa.py
 
 import argparse
-import json
 import logging
 import os
 import pytorch_lightning as pl
@@ -115,26 +114,6 @@ def main(hyperparameters):
     if datamodule.do_test():
         trainer.test(model, datamodule=datamodule)
 
-    # Predict
-    if datamodule.do_predict():
-        assert hasattr(model, "predict_step") and hasattr(model, "predict_epoch_end"), (
-            "To do predictions, the model must implement both `predict_step` and `predict_epoch_end`"
-        )
-
-        if trainer._accelerator_connector.is_distributed:
-            raise ValueError("Predicting on more than 1 GPU may give results in different order.")
-
-        predictions = trainer.predict(model, datamodule=datamodule, return_predictions=True)
-        res = model.predict_epoch_end(predictions)
-
-        for i, (result, preds, _) in enumerate(res):
-            basepath = os.path.join(hyperparameters.output_dir, hyperparameters.predictions_dir, f'{hyperparameters.name}_{i}')
-            with open(os.path.join(basepath, PRED_FILE), "w") as writer:
-                writer.write(json.dumps(preds, indent=4) + "\n")
-            with open(os.path.join(basepath, TEST_FILE), "w") as writer:
-                for key in sorted(result.keys()):
-                    writer.write("%s = %s\n" % (key, str(result[key])))
-
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -176,6 +155,6 @@ if __name__ == "__main__":
     # get NameSpace of paramters
     hyperparameters = parser.parse_args()
     hyperparameters = ExtendedNamespace.from_namespace(hyperparameters)
-    hyperparameters.num_val_sanity_steps = 0
+    hyperparameters.num_sanity_val_steps = 0
 
     main(hyperparameters)

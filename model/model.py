@@ -2,15 +2,7 @@ import torch
 from typing import List
 from transformers_lightning.models import TransformersModel
 from transformers import AutoConfig, AutoModelForQuestionAnswering
-from dataclasses import dataclass
 from evaluation.evaluation import make_predictions, get_raw_scores, make_eval_dict
-
-
-@dataclass
-class RawResult:
-    unique_id: int
-    start_logits: List[int]
-    end_logits: List[int]
 
 
 class QuestionAnsweringModel(TransformersModel):
@@ -23,24 +15,31 @@ class QuestionAnsweringModel(TransformersModel):
         self.tokenizer = tokenizer
 
     def training_step(self, batch, *args):
-        input_ids, input_mask, segment_ids, start_positions, end_positions = (
-            batch['input_ids'], batch['input_mask'], batch['segment_ids'], batch['start_positions'],  batch['end_positions']
-        )
+        
+        input_ids, start_position, end_position = batch['input_ids'], batch['start_position'],  batch['end_position']
+
+        attention_mask = batch.get('attention_mask', None)
+        token_type_ids = batch.get('token_type_ids', None)
+
         results = self.model(
             input_ids,
-            input_mask,
-            start_positions=start_positions,
-            end_positions=end_positions
+            attention_mask=attention_mask,
+            token_type_ids=token_type_ids,
+            start_positions=start_position,
+            end_positions=end_position
         )
+
         self.log('training/loss', results.loss, prog_bar=True, on_epoch=True)
         return results.loss
 
     def validation_step(self, batch, *args):
-        input_ids, input_mask, segment_ids, ids = (
-            batch['input_ids'], batch['input_mask'], batch['segment_ids'], batch['id']
-        )
+        input_ids, ids = batch['input_ids'], batch['example_index']
 
-        results = self.model(input_ids, input_mask)
+        attention_mask = batch.get('attention_mask', None)
+        token_type_ids = batch.get('token_type_ids', None)
+
+        results = self.model(input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids)
+
         batch_start_logits, batch_end_logits = results.start_logits, results.end_logits
         return {'ids': ids, 'batch_start_logits': batch_start_logits, 'batch_end_logits': batch_end_logits}
 
@@ -55,17 +54,14 @@ class QuestionAnsweringModel(TransformersModel):
         batch_start_logits = batch_start_logits.view(-1, batch_start_logits.shape[-1]).detach().cpu().tolist()
         batch_end_logits = batch_end_logits.view(-1, batch_end_logits.shape[-1]).detach().cpu().tolist()
 
-        all_results = []
-        for i, example_index in enumerate(ids):
-            start_logits = batch_start_logits[i]
-            end_logits = batch_end_logits[i]
-            unique_id = self.trainer.datamodule.valid_features[example_index].unique_id
-            raw_result = RawResult(
-                unique_id=unique_id,
-                start_logits=start_logits,
-                end_logits=end_logits
+        all_results = [
+            dict(
+                unique_id=self.trainer.datamodule.valid_dataset[example_index]['unique_id'],
+                start_logits=batch_start_logits[i],
+                end_logits=batch_end_logits[i]
             )
-            all_results.append(raw_result)
+            for i, example_index in enumerate(ids)
+        ]
 
         preds, _ = make_predictions(
             self.trainer.datamodule.valid_examples,
@@ -82,11 +78,13 @@ class QuestionAnsweringModel(TransformersModel):
         self.log('validation/f1', result['f1'], prog_bar=True, on_epoch=True)
 
     def test_step(self, batch, *args):
-        input_ids, input_mask, segment_ids, ids = (
-            batch['input_ids'], batch['input_mask'], batch['segment_ids'], batch['id']
-        )
+        input_ids, ids = batch['input_ids'], batch['example_index']
 
-        results = self.model(input_ids, input_mask)
+        attention_mask = batch.get('attention_mask', None)
+        token_type_ids = batch.get('token_type_ids', None)
+
+        results = self.model(input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids)
+
         batch_start_logits, batch_end_logits = results.start_logits, results.end_logits
         return {'ids': ids, 'batch_start_logits': batch_start_logits, 'batch_end_logits': batch_end_logits}
 
@@ -106,17 +104,14 @@ class QuestionAnsweringModel(TransformersModel):
             batch_start_logits = batch_start_logits.view(-1, batch_start_logits.shape[-1]).detach().cpu().tolist()
             batch_end_logits = batch_end_logits.view(-1, batch_end_logits.shape[-1]).detach().cpu().tolist()
 
-            all_results = []
-            for i, example_index in enumerate(ids):
-                start_logits = batch_start_logits[i]
-                end_logits = batch_end_logits[i]
-                unique_id = self.trainer.datamodule.test_features[dataloader_idx][example_index].unique_id
-                raw_result = RawResult(
-                    unique_id=unique_id,
-                    start_logits=start_logits,
-                    end_logits=end_logits
+            all_results = [
+                dict(
+                    unique_id=self.trainer.datamodule.test_dataset[dataloader_idx][example_index]['unique_id'],
+                    start_logits=batch_start_logits[i],
+                    end_logits=batch_end_logits[i]
                 )
-                all_results.append(raw_result)
+                for i, example_index in enumerate(ids)
+            ]
 
             preds, _ = make_predictions(
                 self.trainer.datamodule.test_examples[dataloader_idx],
@@ -129,15 +124,17 @@ class QuestionAnsweringModel(TransformersModel):
             exact_raw, f1_raw = get_raw_scores(self.trainer.datamodule.test_original[dataloader_idx], preds)
             result = make_eval_dict(exact_raw, f1_raw)
 
-            self.log(f'test/{i}/em', result['exact'], prog_bar=True, on_epoch=True)
-            self.log(f'test/{i}/f1', result['f1'], prog_bar=True, on_epoch=True)
+            self.log(f'test/{dataloader_idx}/em', result['exact'], prog_bar=True, on_epoch=True)
+            self.log(f'test/{dataloader_idx}/f1', result['f1'], prog_bar=True, on_epoch=True)
 
     def predict_step(self, batch, *args):
-        input_ids, input_mask, segment_ids, ids = (
-            batch['input_ids'], batch['input_mask'], batch['segment_ids'], batch['id']
-        )
+        input_ids, ids = batch['input_ids'], batch['example_index']
 
-        results = self.model(input_ids, input_mask)
+        attention_mask = batch.get('attention_mask', None)
+        token_type_ids = batch.get('token_type_ids', None)
+
+        results = self.model(input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids)
+
         batch_start_logits, batch_end_logits = results.start_logits, results.end_logits
         return {'ids': ids, 'batch_start_logits': batch_start_logits, 'batch_end_logits': batch_end_logits}
 
@@ -163,7 +160,7 @@ class QuestionAnsweringModel(TransformersModel):
                 start_logits = batch_start_logits[i]
                 end_logits = batch_end_logits[i]
                 unique_id = self.trainer.datamodule.predict_features[dataloader_idx][example_index].unique_id
-                raw_result = RawResult(
+                raw_result = dict(
                     unique_id=unique_id,
                     start_logits=start_logits,
                     end_logits=end_logits

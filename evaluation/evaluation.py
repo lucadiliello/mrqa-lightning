@@ -1,27 +1,30 @@
 import collections
 import math
 import logging
-from mrqa_official_eval import exact_match_score, f1_score, metric_max_over_ground_truths
+from typing import Dict, List
+
+from datasets.arrow_dataset import Dataset
+from evaluation.mrqa_official_eval import exact_match_score, f1_score, metric_max_over_ground_truths
 from transformers import BasicTokenizer
 
 logger = logging.getLogger(__name__)
 
 
 def make_predictions(
-    all_examples,
-    all_features,
-    all_results,
-    n_best_size,
-    max_answer_length,
+    all_examples: Dataset,
+    all_features: Dataset,
+    all_results: List[Dict],
+    n_best_size: int,
+    max_answer_length: int,
 ):
     example_index_to_features = collections.defaultdict(list)
     unique_id_to_result = {}
 
     for feature in all_features:
-        example_index_to_features[feature.example_index].append(feature)
+        example_index_to_features[feature['example_index']].append(feature)
 
     for result in all_results:
-        unique_id_to_result[result.unique_id] = result
+        unique_id_to_result[result['unique_id']] = result
 
     _PrelimPrediction = collections.namedtuple(
         "PrelimPrediction",
@@ -31,26 +34,29 @@ def make_predictions(
     all_predictions = collections.OrderedDict()
     all_nbest_json = collections.OrderedDict()
 
-    for (example_index, example) in enumerate(all_examples):
-        features = example_index_to_features[example_index]
+    for example in all_examples:
+        features = example_index_to_features[example['example_index']]
         prelim_predictions = []
 
-        for (feature_index, feature) in enumerate(features):
-            result = unique_id_to_result[feature.unique_id]
-            start_indexes = _get_best_indexes(result.start_logits, n_best_size)
-            end_indexes = _get_best_indexes(result.end_logits, n_best_size)
+        for feature_index, feature in enumerate(features):
+            result = unique_id_to_result[feature['unique_id']]
+            start_indexes = _get_best_indexes(result['start_logits'], n_best_size)
+            end_indexes = _get_best_indexes(result['end_logits'], n_best_size)
+
+            feature['token_to_orig_map'] = dict(feature['token_to_orig_map'])  # map between actual token position and position in the original sentence (before split on doc_stride)
+            feature['token_is_max_context'] = {k: bool(v) for k, v in feature['token_is_max_context']}  # whether this token is the most centered in its span
 
             for start_index in start_indexes:
                 for end_index in end_indexes:
-                    if start_index >= len(feature.tokens):
+                    if start_index >= len(feature['tokens']):
                         continue
-                    if end_index >= len(feature.tokens):
+                    if end_index >= len(feature['tokens']):
                         continue
-                    if start_index not in feature.token_to_orig_map:
+                    if start_index not in feature['token_to_orig_map']:
                         continue
-                    if end_index not in feature.token_to_orig_map:
+                    if end_index not in feature['token_to_orig_map']:
                         continue
-                    if not feature.token_is_max_context.get(start_index, False):
+                    if not feature['token_is_max_context'].get(start_index, False):
                         continue
                     if end_index < start_index:
                         continue
@@ -62,15 +68,13 @@ def make_predictions(
                         feature_index=feature_index,
                         start_index=start_index,
                         end_index=end_index,
-                        start_logit=result.start_logits[start_index],
-                        end_logit=result.end_logits[end_index]
+                        start_logit=result['start_logits'][start_index],
+                        end_logit=result['end_logits'][end_index]
                     )
                     prelim_predictions.append(prelim_pred)
 
         prelim_predictions = sorted(
-            prelim_predictions,
-            key=lambda x: (x.start_logit + x.end_logit),
-            reverse=True
+            prelim_predictions, key=lambda x: (x.start_logit + x.end_logit), reverse=True
         )
 
         _NbestPrediction = collections.namedtuple(
@@ -87,10 +91,10 @@ def make_predictions(
             feature = features[pred.feature_index]
 
             if pred.start_index > 0:
-                tok_tokens = feature.tokens[pred.start_index:(pred.end_index + 1)]
-                orig_doc_start = feature.token_to_orig_map[pred.start_index]
-                orig_doc_end = feature.token_to_orig_map[pred.end_index]
-                orig_tokens = example.doc_tokens[orig_doc_start:(orig_doc_end + 1)]
+                tok_tokens = feature['tokens'][pred.start_index:(pred.end_index + 1)]
+                orig_doc_start = feature['token_to_orig_map'][pred.start_index]
+                orig_doc_end = feature['token_to_orig_map'][pred.end_index]
+                orig_tokens = example['doc_tokens'][orig_doc_start:(orig_doc_end + 1)]
                 tok_text = " ".join(tok_tokens)
                 tok_text = tok_text.replace(" ##", "")
                 tok_text = tok_text.replace("##", "")
@@ -144,8 +148,8 @@ def make_predictions(
 
         assert len(nbest_json) >= 1
 
-        all_predictions[example.qas_id] = nbest_json[0]["text"]
-        all_nbest_json[example.qas_id] = nbest_json
+        all_predictions[example['question_id']] = nbest_json[0]["text"]
+        all_nbest_json[example['question_id']] = nbest_json
 
     return all_predictions, all_nbest_json
 

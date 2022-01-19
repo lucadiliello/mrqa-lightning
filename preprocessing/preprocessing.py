@@ -1,42 +1,100 @@
-import collections
-from dataclasses import dataclass
+from collections import defaultdict
 from typing import List, Dict, Tuple
-import json
-import gzip
-from tqdm import tqdm
+import logging
+from datasets import Dataset
 from transformers.tokenization_utils_base import PreTrainedTokenizerBase
-from multiprocessing import Pool
 from functools import partial
+from datasets import load_dataset
 
 
-@dataclass
-class MRQAExample:
-    r""" A single training/test example for the MRQA dataset.
-    For examples without an answer, the start and end position are -1.
-    """
-    qas_id: int
-    question_text: str
-    doc_tokens: List[str]
-    orig_answer_text: str = None
-    start_position: int = None
-    end_position: int = None
+logger = logging.getLogger(__name__)
 
 
-@dataclass
-class InputFeatures:
-    r""" A single set of features of data. """
+AVAILABLE_SPLITS = ('train', 'validation', 'test')
+AVAILABLE_SUBSETS = (
+    'SearchQA',
+    'TriviaQA-web',
+    'HotpotQA',
+    'SQuAD',
+    'NaturalQuestionsShort',
+    'NewsQA',
+    'TextbookQA',
+    'DuoRC.ParaphraseRC',
+    'RelationExtraction',
+    'DROP',
+    'BioASQ',
+    'RACE'
+)
+SUBSETS_TO_IDS = dict([(s, i) for i, s in enumerate(AVAILABLE_SUBSETS)])
+UNIQUE_ID_START = 10000000
 
-    unique_id: int
-    example_index: int
-    doc_span_index: int
-    tokens: List
-    token_to_orig_map: List
-    token_is_max_context: bool
-    input_ids: List
-    input_mask: List
-    segment_ids: List
-    start_position: int = None
-    end_position: int = None
+
+def load_from_datasets(
+    split: str,
+    subsets: List[str],
+    tokenizer: PreTrainedTokenizerBase,
+    max_sequence_length: int,
+    doc_stride: int,
+    max_query_length: int,
+    is_training: bool = False,
+    preprocessing_workers: int = 16,
+) -> Tuple[Dataset, Dataset, Dataset, Dataset]:
+    r""" Read datasets from datasets library and preprocess examples. """
+
+    # at the moment we only accept right padding
+    assert tokenizer.padding_side == 'right', "left padding not supported yet"
+
+    # checks
+    if split not in AVAILABLE_SPLITS:
+        raise ValueError(f'split {split} not in available splits {AVAILABLE_SPLITS}')
+
+    for subset in subsets:
+        if not subset in AVAILABLE_SUBSETS:
+            raise ValueError(f'domain {subset} not in available domains {AVAILABLE_SUBSETS}')
+
+    original = load_dataset('mrqa', keep_in_memory=False, split=split).filter(lambda a: a['subset'] in subsets, num_proc=preprocessing_workers)
+
+    logger.info(f"Preprocessing datasets of split {split} using subsets {subsets}")
+    process_entry_partial = partial(process_entry, is_training=is_training, subsets_to_ids=SUBSETS_TO_IDS)
+
+    # examples preprocessing
+    examples = original.map(
+        process_entry_partial,
+        with_indices=True,
+        num_proc=preprocessing_workers,
+        remove_columns=original.column_names,
+        desc="Preprocessing examples",
+    )
+
+    mp_function = partial(
+        convert_examples_to_features,
+        tokenizer=tokenizer,
+        max_sequence_length=max_sequence_length,
+        doc_stride=doc_stride,
+        max_query_length=max_query_length,
+        is_training=is_training
+    )
+
+    # creating features and tokenizing
+    features = examples.map(
+        mp_function,
+        num_proc=preprocessing_workers,
+        batched=True,
+        batch_size=2,
+        remove_columns=examples.column_names,
+        desc="Tokenizing examples",
+    )
+    # adding unique indexes
+    features = features.add_column('unique_id', list(range(UNIQUE_ID_START, len(features) + UNIQUE_ID_START)))
+
+    columns_to_keep = ('example_index', 'input_ids', 'attention_mask', 'token_type_ids', 'subset', 'unique_id')
+    if is_training is True:
+        columns_to_keep = columns_to_keep + ('start_position', 'end_position')
+
+    cols_to_remove = set(features.column_names) - set(columns_to_keep)
+    dataset = features.remove_columns(cols_to_remove)
+
+    return original, examples, features, dataset
 
 
 def is_whitespace(c):
@@ -45,13 +103,12 @@ def is_whitespace(c):
     return False
 
 
-def process_entry(entry: Dict, is_training: bool = True) -> MRQAExample:
+def process_entry(entry: Dict, index: int, is_training: bool = True, subsets_to_ids: Dict = None) -> Dict:
     r"""
     Process a single dataset entry.
     """
 
-    examples = []
-    paragraph_text = entry["context"]
+    paragraph_text = entry['context']
     doc_tokens = []
     char_to_word_offset = []
     prev_is_whitespace = True
@@ -68,110 +125,99 @@ def process_entry(entry: Dict, is_training: bool = True) -> MRQAExample:
 
         char_to_word_offset.append(len(doc_tokens) - 1)
 
-    for qa in entry["qas"]:
-        qas_id = qa["qid"]
-        question_text = qa["question"]
-        start_position = None
-        end_position = None
-        orig_answer_text = None
+    question_id = entry['qid']
+    question_text = entry['question']
+    start_position = None
+    end_position = None
+    orig_answer_text = None
 
-        if is_training:
-            answers = qa["detected_answers"]
-            spans = sorted([span for spans in answers for span in spans['char_spans']])
-            # take first span
-            char_start, char_end = spans[0][0], spans[0][1]
-            orig_answer_text = paragraph_text[char_start:char_end+1]
-            start_position, end_position = char_to_word_offset[char_start], char_to_word_offset[char_end]
+    if is_training:
+        answers = entry["detected_answers"]
+        spans = sorted([(start, end) for span in answers['char_spans'] for start, end in zip(span['start'], span['end'])])
+        # take first span
+        char_start, char_end = spans[0][0], spans[0][1]
+        orig_answer_text = paragraph_text[char_start:char_end + 1]
+        start_position, end_position = char_to_word_offset[char_start], char_to_word_offset[char_end]
 
-        example = MRQAExample(
-            qas_id=qas_id,
-            question_text=question_text,
-            doc_tokens=doc_tokens,
-            orig_answer_text=orig_answer_text,
-            start_position=start_position,
-            end_position=end_position
-        )
-
-        examples.append(example)
-
-    return examples
-
-
-def read_mrqa_examples(input_file, is_training) -> Tuple[List, List]:
-    r"""
-    Read a MRQA json file into a list of MRQAExample.
-    """
-
-    if isinstance(input_file, str):
-        input_file = [input_file]
-
-    input_data = []
-    for f in input_file:
-        with gzip.GzipFile(f, 'r') as reader:
-            # skip header
-            content = reader.read().decode('utf-8').strip().split('\n')[1:]
-            input_data += [json.loads(line) for line in content]
-
-    examples = [x for example in tqdm(input_data, desc="Processing...") for x in process_entry(example, is_training=is_training)]
-    return input_data, examples
+    example = dict(
+        subset=subsets_to_ids[entry['subset']],
+        example_index=index,
+        question_id=question_id,
+        question_text=question_text,
+        doc_tokens=doc_tokens,
+        orig_answer_text=orig_answer_text,
+        start_position=start_position,
+        end_position=end_position
+    )
+    return example
 
 
 def convert_examples_to_features(
-    examples: List,
-    tokenizer: PreTrainedTokenizerBase,
-    max_sequence_length: int,
-    doc_stride: int,
-    max_query_length: int,
-    is_training: bool,
-    preprocessing_workers: int,
-) -> List[InputFeatures]:
-
-    mp_function = partial(
-        convert_example_to_features,
-        tokenizer=tokenizer,
-        max_sequence_length=max_sequence_length,
-        doc_stride=doc_stride,
-        max_query_length=max_query_length,
-        is_training=is_training
-    )
-
-    with Pool(processes=preprocessing_workers) as pool:
-        features = [
-            x for processed_batch in pool.map(
-                func=mp_function,
-                iterable=tqdm(enumerate(examples), total=len(examples), desc="Converting samples to features"),
-                chunksize=1000,
-            ) for x in processed_batch
-        ]
-        unique_id_start = 10000000
-        for i, feat in enumerate(features):
-            feat.unique_id = unique_id_start + i
-
-    return features
-
-
-def convert_example_to_features(
-    example: MRQAExample,
+    examples: Dict[str, List],
     tokenizer: PreTrainedTokenizerBase = None,
     max_sequence_length: int = None,
     doc_stride: int = None,
     max_query_length: int = None,
     is_training: bool = None,
-) -> List[InputFeatures]:
+) -> Dict[str, List]:
     r""" Loads a data file into a list of `InputBatch`s. """
 
-    example_index, example = example
-    features = []
-    query_tokens = tokenizer.tokenize(example.question_text)
+    results = [
+        _convert_example_to_features(
+            index,
+            question_text,
+            doc_tokens,
+            orig_answer_text,
+            start_position,
+            end_position,
+            subset,
+            tokenizer=tokenizer,
+            max_sequence_length=max_sequence_length,
+            doc_stride=doc_stride,
+            max_query_length=max_query_length,
+            is_training=is_training,
+        )
+        for (
+            index, question_text, doc_tokens, orig_answer_text, start_position, end_position, subset
+        ) in zip(
+            examples['example_index'],
+            examples['question_text'],
+            examples['doc_tokens'],
+            examples['orig_answer_text'],
+            examples['start_position'],
+            examples['end_position'],
+            examples['subset'],
+        )
+    ]
+    res = {k: [x for dic in results for x in dic[k]] for k in results[0].keys()}
+    return res
 
-    if len(query_tokens) > max_query_length:
-        query_tokens = query_tokens[0: max_query_length]
 
-    tok_to_orig_index = []
-    orig_to_tok_index = []
-    all_doc_tokens = []
+def _convert_example_to_features(
+    index,
+    question_text,
+    doc_tokens,
+    orig_answer_text,
+    start_position,
+    end_position,
+    subset,
+    tokenizer: PreTrainedTokenizerBase = None,
+    max_sequence_length: int = None,
+    doc_stride: int = None,
+    max_query_length: int = None,
+    is_training: bool = None,
+) -> Dict[str, List]:
 
-    for (i, token) in enumerate(example.doc_tokens):
+    res = defaultdict([])
+
+    # doc -> "hi I am a powerfull sequence of tokens"
+    # doc_tokens -> ["hi", "I", "am", "a", "powerfull", "sequence", "of", "tokens"]
+    # tokenized -> ['hi', 'ĠI', 'Ġam', 'Ġa', 'Ġpower', 'full', 'Ġsequence', 'Ġof', 'Ġtokens']
+    orig_to_tok_index = []  # [0, 1, 2, 3, 4, 6, 7, 8]
+    tok_to_orig_index = []  # [0, 1, 2, 3, 4, 4, 5, 6, 7]
+    all_doc_tokens = []  # ['hi', 'ĠI', 'Ġam', 'Ġa', 'Ġpower', 'full', 'Ġsequence', 'Ġof', 'Ġtokens']
+
+    for i, token in enumerate(doc_tokens):
         orig_to_tok_index.append(len(all_doc_tokens))
         sub_tokens = tokenizer.tokenize(token)
         for sub_token in sub_tokens:
@@ -185,84 +231,63 @@ def convert_example_to_features(
         tok_start_position = -1
         tok_end_position = -1
 
-    if is_training:
-        tok_start_position = orig_to_tok_index[example.start_position]
+        tok_start_position = orig_to_tok_index[start_position]
 
-        if example.end_position < len(example.doc_tokens) - 1:
-            tok_end_position = orig_to_tok_index[example.end_position + 1] - 1
+        if end_position < len(doc_tokens) - 1:
+            tok_end_position = orig_to_tok_index[end_position + 1] - 1   # to catch the last subtoken on the target word
         else:
             tok_end_position = len(all_doc_tokens) - 1
 
-        (tok_start_position, tok_end_position) = _improve_answer_span(
-            all_doc_tokens, tok_start_position, tok_end_position, tokenizer, example.orig_answer_text
+        tok_start_position, tok_end_position = _improve_answer_span(
+            all_doc_tokens, tok_start_position, tok_end_position, tokenizer, orig_answer_text
         )
 
-    # The -3 accounts for [CLS], [SEP] and [SEP]
-    max_tokens_for_doc = max_sequence_length - len(query_tokens) - 3
+    query_tokens = tokenizer.tokenize(question_text)[:max_query_length]
+
+    # The number_of_special_tokens accounts for example to [CLS], [SEP] and [SEP]
+    number_of_special_tokens = tokenizer.num_special_tokens_to_add(pair=True)
+    max_tokens_for_doc = max_sequence_length - len(query_tokens) - number_of_special_tokens
 
     # We can have documents that are longer than the maximum sequence length.
     # To deal with this we do a sliding window approach, where we take chunks
     # of the up to our max length with a stride of `doc_stride`.
-    _DocSpan = collections.namedtuple("DocSpan", ["start", "length"])
 
     doc_spans = []
     start_offset = 0
-
     while start_offset < len(all_doc_tokens):
         length = len(all_doc_tokens) - start_offset
 
         if length > max_tokens_for_doc:
             length = max_tokens_for_doc
-        doc_spans.append(_DocSpan(start=start_offset, length=length))
+
+        doc_spans.append((start_offset, length))
 
         if start_offset + length == len(all_doc_tokens):
             break
 
         start_offset += min(length, doc_stride)
 
-    for (doc_span_index, doc_span) in enumerate(doc_spans):
-        tokens = []
+    # for each span of the sliding window
+    # doc_span_index -> index
+    # doc_span -> (start_index, length of span)
+    for doc_span_index, (doc_span_start, doc_span_length) in enumerate(doc_spans):
+
+        encoded = tokenizer(
+            tokenizer.convert_tokens_to_string(query_tokens),
+            tokenizer.convert_tokens_to_string(all_doc_tokens[doc_span_start:doc_span_start + doc_span_length]),
+            truncation='only_second',
+            padding="max_length",
+            max_length=max_sequence_length,
+        )
+        start_position_second_sequence = encoded.sequence_ids().index(1)  # get first position index of second sequence
+
         token_to_orig_map = {}
         token_is_max_context = {}
-        segment_ids = []
-
-        tokens.append("[CLS]")
-        segment_ids.append(0)
-
-        for token in query_tokens:
-            tokens.append(token)
-            segment_ids.append(0)
-
-        tokens.append("[SEP]")
-        segment_ids.append(0)
-
-        for i in range(doc_span.length):
-            split_token_index = doc_span.start + i
-            token_to_orig_map[len(tokens)] = tok_to_orig_index[split_token_index]
-
+        for i in range(doc_span_length):
+            split_token_index = doc_span_start + i
+            token_to_orig_map[start_position_second_sequence + i] = tok_to_orig_index[split_token_index]
             is_max_context = _check_is_max_context(doc_spans, doc_span_index, split_token_index)
-            token_is_max_context[len(tokens)] = is_max_context
-            tokens.append(all_doc_tokens[split_token_index])
-            segment_ids.append(1)
-
-        tokens.append("[SEP]")
-        segment_ids.append(1)
-
-        input_ids = tokenizer.convert_tokens_to_ids(tokens)
-
-        # The mask has 1 for real tokens and 0 for padding tokens. Only real
-        # tokens are attended to.
-        input_mask = [1] * len(input_ids)
-
-        # Zero-pad up to the sequence length.
-        while len(input_ids) < max_sequence_length:
-            input_ids.append(0)
-            input_mask.append(0)
-            segment_ids.append(0)
-
-        assert len(input_ids) == max_sequence_length
-        assert len(input_mask) == max_sequence_length
-        assert len(segment_ids) == max_sequence_length
+            token_is_max_context[start_position_second_sequence + i] = int(is_max_context)
 
         start_position = None
         end_position = None
@@ -270,8 +295,8 @@ def convert_example_to_features(
         if is_training:
             # For training, if our document chunk does not contain an annotation
             # we throw it out, since there is nothing to predict.
-            doc_start = doc_span.start
-            doc_end = doc_span.start + doc_span.length - 1
+            doc_start = doc_span_start
+            doc_end = doc_span_start + doc_span_length - 1
             out_of_span = False
 
             if not (tok_start_position >= doc_start and tok_end_position <= doc_end):
@@ -285,22 +310,23 @@ def convert_example_to_features(
                 start_position = tok_start_position - doc_start + doc_offset
                 end_position = tok_end_position - doc_start + doc_offset
 
-        feature = InputFeatures(
-            unique_id=None,
-            example_index=example_index,
-            doc_span_index=doc_span_index,
-            tokens=tokens,
-            token_to_orig_map=token_to_orig_map,
-            token_is_max_context=token_is_max_context,
-            input_ids=input_ids,
-            input_mask=input_mask,
-            segment_ids=segment_ids,
-            start_position=start_position,
-            end_position=end_position
-        )
-        features.append(feature)
+        tokens = [t for t, mask in zip(encoded.tokens(), encoded['attention_mask']) if mask]
 
-    return features
+        res['example_index'].append(index)
+        res['subset'].append(subset)
+        res['doc_span_index'].append(doc_span_index)
+        res['tokens'].append(tokens)
+        res['token_to_orig_map'].append(list(token_to_orig_map.items()))
+        res['token_is_max_context'].append(list(token_is_max_context.items()))
+        res['input_ids'].append(encoded['input_ids'])
+        if 'attention_mask' in encoded:
+            res['attention_mask'].append(encoded['attention_mask'])
+        if 'token_type_ids' in encoded:
+            res['token_type_ids'].append(encoded['token_type_ids'])
+        res['start_position'].append(start_position)
+        res['end_position'].append(end_position)
+
+    return res
 
 
 def _improve_answer_span(doc_tokens, input_start, input_end, tokenizer, orig_answer_text):
@@ -317,21 +343,21 @@ def _improve_answer_span(doc_tokens, input_start, input_end, tokenizer, orig_ans
 
 
 def _check_is_max_context(doc_spans, cur_span_index, position):
-    r"""Check if this is the 'max context' doc span for the token."""
+    r""" Check if this is the 'max context' doc span for the token. """
     best_score = None
     best_span_index = None
 
-    for (span_index, doc_span) in enumerate(doc_spans):
-        end = doc_span.start + doc_span.length - 1
+    for span_index, (doc_span_start, doc_span_length) in enumerate(doc_spans):
+        end = doc_span_start + doc_span_length - 1
 
-        if position < doc_span.start:
+        if position < doc_span_start:
             continue
         if position > end:
             continue
 
-        num_left_context = position - doc_span.start
+        num_left_context = position - doc_span_start
         num_right_context = end - position
-        score = min(num_left_context, num_right_context) + 0.01 * doc_span.length
+        score = min(num_left_context, num_right_context) + 0.01 * doc_span_length
 
         if best_score is None or score > best_score:
             best_score = score
