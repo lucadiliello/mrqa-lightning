@@ -120,5 +120,5 @@ python main.py --help
 
 
 ## Copyright
-Copyright (c) 2019, Facebook, Inc. and its affiliates. All Rights Reserved
-Adapterd by Luca Di Liello from https://github.com/facebookresearch/SpanBERT/blob/0670d8b6a38f6714b85ea7a033f16bd8cc162676/code/run_mrqa.py
+Copyright (c) 2019, Facebook, Inc. and its affiliates. All Rights Reserved.
+Project adapted by Luca Di Liello from https://github.com/facebookresearch/SpanBERT/blob/0670d8b6a38f6714b85ea7a033f16bd8cc162676/code/run_mrqa.py
