@@ -9,13 +9,12 @@ Multi GPU and Multi Node - Multi GPU without changing a single line of code.
 
 ## Advantages
 
-- Updated to use latest versions of `pytorch-lightning` and `transformers`
-- Works with every `*ForQuestionAnswering` in the `transformers` library
-- Much faster datasets preparation using multiprocessing
-- Much easier training on different machines thanks to `pytorch-lightning`
-- Checkpointing and better logging
-- `datasets` library really reduces memory usage
-- tokenization works for every model, and not just for `BERT` as in the original project
+- Updated to use latest versions of `pytorch-lightning` and `transformers`.
+- Works with every `*ForQuestionAnswering` model in the `transformers` library.
+- Much faster datasets preparation using multiprocessing.
+- Multi GPU training, checkpointing, logging and much more thanks to `pytorch-lightning`.
+- `datasets` library really reduces memory usage.
+- Works for every model, and not just with `BERT` as in the original project
 
 
 ## Prepare environment
