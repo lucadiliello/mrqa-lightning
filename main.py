@@ -1,27 +1,22 @@
-# Copyright (c) 2019, Facebook, Inc. and its affiliates. All Rights Reserved
-# Adapterd by Luca Di Liello from https://github.com/facebookresearch/SpanBERT/blob/0670d8b6a38f6714b85ea7a033f16bd8cc162676/code/run_mrqa.py
-
 import argparse
 import logging
 import os
+
+import datasets
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
-from pytorch_lightning.callbacks.early_stopping import EarlyStopping
-from pytorch_lightning.callbacks.model_checkpoint import ModelCheckpoint
 from pytorch_lightning.loggers import TestTubeLogger
 from pytorch_lightning.plugins import DDPPlugin
 from pytorch_lightning.utilities.seed import seed_everything
-from transformers import AutoTokenizer
 from transformers_lightning.callbacks import TransformersModelCheckpointCallback
 from transformers_lightning.defaults import DefaultConfig
+
 from datamodule.datamodule import QuestionAnsweringDataModule
 from model.model import QuestionAnsweringModel
+from utilities.utilities import ExtendedNamespace, print_results
 
-from utilities.utilities import ExtendedNamespace
 
-
-PRED_FILE = "predictions.json"
-TEST_FILE = "test_results.txt"
+datasets.logging.set_verbosity(logging.ERROR)
 
 
 logging.basicConfig(
@@ -35,13 +30,12 @@ logger = logging.getLogger(__name__)
 def main(hyperparameters):
 
     os.environ['TOKENIZERS_PARALLELISM'] = "true"
-    tokenizer = AutoTokenizer.from_pretrained(hyperparameters.pre_trained_model)
 
     # set the random seed
     seed_everything(seed=hyperparameters.seed, workers=True)
 
     # instantiate PL model
-    model = QuestionAnsweringModel(hyperparameters, tokenizer)
+    model = QuestionAnsweringModel(hyperparameters)
 
     # default tensorboard logger
     test_tube_logger = TestTubeLogger(
@@ -104,7 +98,7 @@ def main(hyperparameters):
     )
 
     # DataModules
-    datamodule = QuestionAnsweringDataModule(hyperparameters, trainer, tokenizer)
+    datamodule = QuestionAnsweringDataModule(hyperparameters, trainer, model.tokenizer)
 
     # Train!
     if datamodule.do_train():
@@ -112,7 +106,8 @@ def main(hyperparameters):
 
     # Test!
     if datamodule.do_test():
-        trainer.test(model, datamodule=datamodule)
+        results = trainer.test(model, datamodule=datamodule, verbose=False)
+        print_results(hyperparameters.test_subsets, results)
 
 
 if __name__ == "__main__":
@@ -142,13 +137,9 @@ if __name__ == "__main__":
         help="Number of non-improving validations to wait before early stopping"
     )
     parser.add_argument("--name", type=str, required=True, help="Run name")
+    parser.add_argument("--debug", action="store_true", help="Debug mode will load only 10 examples per dataset")
 
     # I/O folders
-    parser.add_argument('--predictions_dir', type=str, default="predictions", required=False, help="Predictions folder")
-    parser.add_argument("--pre_trained_model", default=None, type=str, required=True)
-    parser.add_argument("--n_best_size", default=20, type=int,
-                        help="The total number of n-best predictions to generate in the nbest_predictions.json "
-                                "output file.")
     parser.add_argument('--seed', type=int, default=1337,
                         help="random seed for initialization")
 

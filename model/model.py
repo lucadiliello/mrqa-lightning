@@ -1,22 +1,35 @@
-import torch
+from argparse import ArgumentParser
 from typing import List
+
+import torch
+from torchmetrics import Accuracy
+from transformers import AutoConfig, AutoModelForQuestionAnswering, AutoTokenizer
 from transformers_lightning.models import TransformersModel
-from transformers import AutoConfig, AutoModelForQuestionAnswering
-from evaluation.evaluation import make_predictions, get_raw_scores, make_eval_dict
+
+from evaluation.evaluation import get_raw_scores, make_predictions
 
 
 class QuestionAnsweringModel(TransformersModel):
     r""" QA functionalities with EM and F1 computation. """
 
-    def __init__(self, hyperparameters, tokenizer) -> None:
+    def __init__(self, hyperparameters):
+        r""" Instantiate config, model, tokenizer and metrics. """
         super().__init__(hyperparameters)
+
+        self.tokenizer = AutoTokenizer.from_pretrained(hyperparameters.pre_trained_model)
         self.config = AutoConfig.from_pretrained(self.hyperparameters.pre_trained_model)
-        self.model = AutoModelForQuestionAnswering.from_pretrained(self.hyperparameters.pre_trained_model, config=self.config)
-        self.tokenizer = tokenizer
+        self.model = AutoModelForQuestionAnswering.from_pretrained(
+            self.hyperparameters.pre_trained_model, config=self.config
+        )
+
+        self.train_start_acc = Accuracy()
+        self.train_end_acc = Accuracy()
 
     def training_step(self, batch, *args):
-        
-        input_ids, start_position, end_position = batch['input_ids'], batch['start_position'],  batch['end_position']
+        r""" Simple training step without complete evaluation.
+        Computing only accuracy of first and last position.
+        """
+        input_ids, start_position, end_position = batch['input_ids'], batch['start_position'], batch['end_position']
 
         attention_mask = batch.get('attention_mask', None)
         token_type_ids = batch.get('token_type_ids', None)
@@ -28,42 +41,65 @@ class QuestionAnsweringModel(TransformersModel):
             start_positions=start_position,
             end_positions=end_position
         )
+        self.train_start_acc(results.start_logits.argmax(dim=-1), start_position)
+        self.train_end_acc(results.end_logits.argmax(dim=-1), end_position)
 
-        self.log('training/loss', results.loss, prog_bar=True, on_epoch=True)
+        self.log('training/loss', results.loss, on_step=True)
+        self.log('training/start_acc', self.train_start_acc, on_step=True)
+        self.log('training/end_acc', self.train_end_acc, on_step=True)
+
         return results.loss
 
-    def validation_step(self, batch, *args):
-        input_ids, ids = batch['input_ids'], batch['example_index']
+    def eval_step(self, batch, *args):
+        r""" Generic eval step. Used for both validation and test. """
+        input_ids, unique_indexes, start_position, end_position = (
+            batch['input_ids'], batch['unique_id'], batch['start_position'], batch['end_position']
+        )
 
         attention_mask = batch.get('attention_mask', None)
         token_type_ids = batch.get('token_type_ids', None)
 
-        results = self.model(input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids)
+        results = self.model(
+            input_ids,
+            attention_mask=attention_mask,
+            token_type_ids=token_type_ids,
+            start_positions=start_position,
+            end_positions=end_position
+        )
+        return results.loss, unique_indexes, results.start_logits, results.end_logits
 
-        batch_start_logits, batch_end_logits = results.start_logits, results.end_logits
-        return {'ids': ids, 'batch_start_logits': batch_start_logits, 'batch_end_logits': batch_end_logits}
+    # all methods are similar apart from logging names and input data
+    def validation_step(self, *args, **kwargs):
+        r""" Exactly as `eval_step`. """
+        return self.eval_step(*args, **kwargs)
+
+    def test_step(self, *args, **kwargs):
+        r""" Exactly as `eval_step`. """
+        return self.eval_step(*args, **kwargs)
 
     def validation_epoch_end(self, outputs: List) -> None:
-        ids = torch.cat([o['ids'] for o in outputs], dim=0)
-        batch_start_logits = torch.cat([o['batch_start_logits'] for o in outputs], dim=0)
-        batch_end_logits = torch.cat([o['batch_end_logits'] for o in outputs], dim=0)
+        r"""
+        Collects results from the various steps, syncronizes from the different processes and
+        finally computes the metrics for QA.
+        """
+        loss = torch.stack([o[0] for o in outputs]).mean()
+        unique_indexes = torch.cat([o[1] for o in outputs], dim=0)
+        batch_start_logits = torch.cat([o[2] for o in outputs], dim=0)
+        batch_end_logits = torch.cat([o[3] for o in outputs], dim=0)
 
-        ids = self.all_gather(ids, sync_grads=False).view(-1).detach().cpu().tolist()
-        batch_start_logits = self.all_gather(batch_start_logits, sync_grads=False)
-        batch_end_logits = self.all_gather(batch_end_logits, sync_grads=False)
+        unique_indexes = self.all_gather(unique_indexes).view(-1).detach().cpu().tolist()
+
+        batch_start_logits = self.all_gather(batch_start_logits)
         batch_start_logits = batch_start_logits.view(-1, batch_start_logits.shape[-1]).detach().cpu().tolist()
+        batch_end_logits = self.all_gather(batch_end_logits)
         batch_end_logits = batch_end_logits.view(-1, batch_end_logits.shape[-1]).detach().cpu().tolist()
 
         all_results = [
-            dict(
-                unique_id=self.trainer.datamodule.valid_dataset[example_index]['unique_id'],
-                start_logits=batch_start_logits[i],
-                end_logits=batch_end_logits[i]
-            )
-            for i, example_index in enumerate(ids)
+            dict(unique_id=unique_id, start_logits=start_logits, end_logits=end_logits)
+            for start_logits, end_logits, unique_id in zip(batch_start_logits, batch_end_logits, unique_indexes)
         ]
 
-        preds, _ = make_predictions(
+        preds = make_predictions(
             self.trainer.datamodule.valid_examples,
             self.trainer.datamodule.valid_features,
             all_results,
@@ -71,49 +107,43 @@ class QuestionAnsweringModel(TransformersModel):
             self.hyperparameters.max_answer_length,
         )
 
-        exact_raw, f1_raw = get_raw_scores(self.trainer.datamodule.valid_original, preds)
-        result = make_eval_dict(exact_raw, f1_raw)
+        original = self.trainer.datamodule.valid_examples
+        exact_raw, f1_raw = get_raw_scores(original, preds)
 
-        self.log('validation/em', result['exact'], prog_bar=True, on_epoch=True)
-        self.log('validation/f1', result['f1'], prog_bar=True, on_epoch=True)
+        exact_match = torch.tensor(list(exact_raw.values()), dtype=torch.float).mean()
+        f1 = torch.tensor(list(f1_raw.values()), dtype=torch.float).mean()
 
-    def test_step(self, batch, *args):
-        input_ids, ids = batch['input_ids'], batch['example_index']
+        self.log('validation/loss', loss)
+        self.log('validation/em', exact_match)
+        self.log('validation/f1', f1)
 
-        attention_mask = batch.get('attention_mask', None)
-        token_type_ids = batch.get('token_type_ids', None)
+    def test_epoch_end(self, outputs):
+        r"""
+        Collects results from the various steps, syncronizes from the different processes and
+        finally computes the metrics for QA.
+        """
+        if isinstance(outputs[0], tuple):
+            outputs = [outputs]
 
-        results = self.model(input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids)
+        for dataloader_idx, dataloader_outputs in enumerate(outputs):
+            loss = torch.stack([o[0] for o in dataloader_outputs]).mean()
+            unique_indexes = torch.cat([o[1] for o in dataloader_outputs], dim=0)
+            batch_start_logits = torch.cat([o[2] for o in dataloader_outputs], dim=0)
+            batch_end_logits = torch.cat([o[3] for o in dataloader_outputs], dim=0)
 
-        batch_start_logits, batch_end_logits = results.start_logits, results.end_logits
-        return {'ids': ids, 'batch_start_logits': batch_start_logits, 'batch_end_logits': batch_end_logits}
+            unique_indexes = self.all_gather(unique_indexes).view(-1).detach().cpu().tolist()
 
-    def test_epoch_end(self, all_outputs: List) -> None:
-        r""" Evaluate a list of predictions for each test dataloader. """
-        if isinstance(all_outputs[0], dict):
-            all_outputs = [all_outputs]
-
-        for dataloader_idx, outputs in enumerate(all_outputs):
-            ids = torch.cat([o['ids'] for o in outputs], dim=0)
-            batch_start_logits = torch.cat([o['batch_start_logits'] for o in outputs], dim=0)
-            batch_end_logits = torch.cat([o['batch_end_logits'] for o in outputs], dim=0)
-
-            ids = self.all_gather(ids, sync_grads=False).view(-1).detach().cpu().tolist()
-            batch_start_logits = self.all_gather(batch_start_logits, sync_grads=False)
-            batch_end_logits = self.all_gather(batch_end_logits, sync_grads=False)
+            batch_start_logits = self.all_gather(batch_start_logits)
             batch_start_logits = batch_start_logits.view(-1, batch_start_logits.shape[-1]).detach().cpu().tolist()
+            batch_end_logits = self.all_gather(batch_end_logits)
             batch_end_logits = batch_end_logits.view(-1, batch_end_logits.shape[-1]).detach().cpu().tolist()
 
             all_results = [
-                dict(
-                    unique_id=self.trainer.datamodule.test_dataset[dataloader_idx][example_index]['unique_id'],
-                    start_logits=batch_start_logits[i],
-                    end_logits=batch_end_logits[i]
-                )
-                for i, example_index in enumerate(ids)
+                dict(unique_id=unique_id, start_logits=start_logits, end_logits=end_logits)
+                for start_logits, end_logits, unique_id in zip(batch_start_logits, batch_end_logits, unique_indexes)
             ]
 
-            preds, _ = make_predictions(
+            preds = make_predictions(
                 self.trainer.datamodule.test_examples[dataloader_idx],
                 self.trainer.datamodule.test_features[dataloader_idx],
                 all_results,
@@ -121,66 +151,24 @@ class QuestionAnsweringModel(TransformersModel):
                 self.hyperparameters.max_answer_length,
             )
 
-            exact_raw, f1_raw = get_raw_scores(self.trainer.datamodule.test_original[dataloader_idx], preds)
-            result = make_eval_dict(exact_raw, f1_raw)
+            original = self.trainer.datamodule.test_examples[dataloader_idx]
+            exact_raw, f1_raw = get_raw_scores(original, preds)
 
-            self.log(f'test/{dataloader_idx}/em', result['exact'], prog_bar=True, on_epoch=True)
-            self.log(f'test/{dataloader_idx}/f1', result['f1'], prog_bar=True, on_epoch=True)
+            exact_match = torch.tensor(list(exact_raw.values()), dtype=torch.float).mean()
+            f1 = torch.tensor(list(f1_raw.values()), dtype=torch.float).mean()
 
-    def predict_step(self, batch, *args):
-        input_ids, ids = batch['input_ids'], batch['example_index']
+            name = self.hyperparameters.test_subsets[dataloader_idx]
+            self.log(f'test/{name}/loss', loss)
+            self.log(f'test/{name}/em', exact_match)
+            self.log(f'test/{name}/f1', f1)
 
-        attention_mask = batch.get('attention_mask', None)
-        token_type_ids = batch.get('token_type_ids', None)
-
-        results = self.model(input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids)
-
-        batch_start_logits, batch_end_logits = results.start_logits, results.end_logits
-        return {'ids': ids, 'batch_start_logits': batch_start_logits, 'batch_end_logits': batch_end_logits}
-
-    def predict_epoch_end(self, all_outputs: List) -> None:
-        r""" Evaluate a list of predictions for each predict dataloader. """
-        if isinstance(all_outputs[0], dict):
-            all_outputs = [all_outputs]
-
-        res = []
-        for dataloader_idx, outputs in enumerate(all_outputs):
-            ids = torch.cat([o['ids'] for o in outputs], dim=0)
-            batch_start_logits = torch.cat([o['batch_start_logits'] for o in outputs], dim=0)
-            batch_end_logits = torch.cat([o['batch_end_logits'] for o in outputs], dim=0)
-
-            ids = self.all_gather(ids, sync_grads=False).view(-1).detach().cpu().tolist()
-            batch_start_logits = self.all_gather(batch_start_logits, sync_grads=False)
-            batch_end_logits = self.all_gather(batch_end_logits, sync_grads=False)
-            batch_start_logits = batch_start_logits.view(-1, batch_start_logits.shape[-1]).detach().cpu().tolist()
-            batch_end_logits = batch_end_logits.view(-1, batch_end_logits.shape[-1]).detach().cpu().tolist()
-
-            all_results = []
-            for i, example_index in enumerate(ids):
-                start_logits = batch_start_logits[i]
-                end_logits = batch_end_logits[i]
-                unique_id = self.trainer.datamodule.predict_features[dataloader_idx][example_index].unique_id
-                raw_result = dict(
-                    unique_id=unique_id,
-                    start_logits=start_logits,
-                    end_logits=end_logits
-                )
-                all_results.append(raw_result)
-
-            preds, nbest_preds = make_predictions(
-                self.trainer.datamodule.predict_examples[dataloader_idx],
-                self.trainer.datamodule.predict_features[dataloader_idx],
-                all_results,
-                self.hyperparameters.n_best_size,
-                self.hyperparameters.max_answer_length,
-            )
-
-            exact_raw, f1_raw = get_raw_scores(self.trainer.datamodule.predict_original[dataloader_idx], preds)
-            result = make_eval_dict(exact_raw, f1_raw)
-
-            self.log(f'predict/{i}/em', result['exact'], prog_bar=True, on_epoch=True)
-            self.log(f'predict/{i}/f1', result['f1'], prog_bar=True, on_epoch=True)
-
-            res.append(result, preds, nbest_preds)
-
-        return res
+    @staticmethod
+    def add_model_specific_args(parser: ArgumentParser):
+        super(QuestionAnsweringModel, QuestionAnsweringModel).add_model_specific_args(parser)
+        parser.add_argument("--pre_trained_model", default=None, type=str, required=True)
+        parser.add_argument(
+            "--n_best_size",
+            default=20,
+            type=int,
+            help="The total number of n-best predictions to generate in the nbest_predictions.json output file."
+        )
