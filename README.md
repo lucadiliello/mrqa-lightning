@@ -15,6 +15,7 @@ Multi GPU and Multi Node - Multi GPU without changing a single line of code.
 - Much easier training on different machines thanks to `pytorch-lightning`
 - Checkpointing and better logging
 - `datasets` library really reduces memory usage
+- tokenization works for every model, and not just for `BERT` as in the original project
 
 
 ## Prepare environment
@@ -26,28 +27,22 @@ pip install -r requirements.txt
 
 ## Get the data
 
-The training/dev/test datasets can be automatically downloaded or provided by the user. Available datasets for automatic download include:
+The training/dev/test datasets are automatically downloaded. You can choose training and validation sets among:
+- `NewsQA`
+- `NaturalQuestionsShort`
+- `TriviaQA-web`
+- `SearchQA`
+- `HotpotQA`
+- `SQuAD`
 
-- `squad_train`
-- `newsqa_train`
-- `triviaqa_train`
-- `searchqa_train`
-- `hotpotqa_train`
-- `naturalquestions_train`
-- `squad_dev`
-- `newsqa_dev`
-- `triviaqa_dev`
-- `searchqa_dev`
-- `hotpotqa_dev`
-- `naturalquestions_dev`
-- `bioasq_dev`
-- `drop_dev`
-- `duorc_dev`
-- `race_dev`
-- `relationextraction_dev`
-- `textbookqa_dev`
+and test sets among:
+- `RACE`
+- `DuoRC.ParaphraseRC`
+- `BioASQ`
+- `TextbookQA`
+- `RelationExtraction`
+- `DROP`
 
-otherwise just provide the path to your `*.jsonl.gz` file.
 
 ## Run the fine-tuning
 
@@ -57,17 +52,19 @@ python main.py \
     --accelerator gpu \
     --pre_trained_model roberta-base \
     --name roberta-base-finetuned-hotpotqa \
-    --train_datasets hotpotqa_train \
-    --dev_datasets hotpotqa_train \
-    --batch_size 32 \
+    --train_subsets HotpotQA SearchQA \
+    --val_subsets HotpotQA \
+    --test_subsets DROP RACE \
+    --batch_size 16 \
     --val_batch_size 32 \
+    --test_batch_size 32 \
     --accumulate_grad_batches 2 \
     --learning_rate 1e-5 \
     --max_epochs 4 \
     --max_sequence_length 512 \
     --doc_stride 128 \
     --val_check_interval 0.2 \
-    --output_dir outputs/mrqa-training/hotpotqa \
+    --output_dir outputs/mrqa-training/hotpot_search \
     --num_warmup_steps 100 \
     --monitor validation/f1 \
     --patience 5 \
@@ -85,10 +82,12 @@ python main.py \
     --accelerator gpu --devices 8 --strategy ddp \
     --pre_trained_model roberta-base \
     --name roberta-base-finetuned-hotpotqa \
-    --train_datasets data_dir/HotpotQA-train.jsonl.gz data_dir/TriviaQA-train.jsonl.gz \
-    --dev_datasets data_dir/HotpotQA-dev.jsonl.gz \
+    --train_subsets HotpotQA \
+    --val_subsets HotpotQA \
+    --test_subsets DROP \
     --batch_size 32 \
     --val_batch_size 32 \
+    --test_batch_size 32 \
     --accumulate_grad_batches 2 \
     --learning_rate 1e-5 \
     --max_epochs 4 \
@@ -103,26 +102,23 @@ python main.py \
     --num_workers 8 \
 ```
 
-Pass custom train files like:
-```bash
-    --train_datasets data_dir/HotpotQA-train.jsonl.gz \
-    --dev_datasets data_dir/HotpotQA-dev.jsonl.gz \
-```
-
 Get all the available hyperparameters with:
 
 ```bash
 python main.py --help
 ```
 
-
 ## FAQ
 - `batch_size` is per single device (GPU, TPU, ...)
 - `accumulate_grad_batches` enables you to use larger batch sizes when memory is a contraint
 - `max_steps` set the max number of steps instead of `max_epochs`
-- use `test_datasets` or `predict_datasets` for testing only or for creating predictions
-- predictions are placed into the `--prediction_dir` folder
+- use only `test_subsets` if you want to test only a model
 
 
-## TODO
-[X] Tokenization that is independent of the used model
+## Troubleshooting
+- Delete cache folder and let the script create datasets again. The default cache folder is `~/.cache/mrqa-lightning`.
+
+
+## Copyright
+Copyright (c) 2019, Facebook, Inc. and its affiliates. All Rights Reserved
+Adapterd by Luca Di Liello from https://github.com/facebookresearch/SpanBERT/blob/0670d8b6a38f6714b85ea7a033f16bd8cc162676/code/run_mrqa.py
