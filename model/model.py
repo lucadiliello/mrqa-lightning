@@ -165,7 +165,9 @@ class QuestionAnsweringModel(TransformersModel):
     @staticmethod
     def add_model_specific_args(parser: ArgumentParser):
         super(QuestionAnsweringModel, QuestionAnsweringModel).add_model_specific_args(parser)
-        parser.add_argument("--pre_trained_model", default=None, type=str, required=True)
+        parser.add_argument(
+            "--pre_trained_model", default=None, type=str, required=True, help="Path or name of pre-trained model."
+        )
         parser.add_argument(
             "--n_best_size",
             default=20,

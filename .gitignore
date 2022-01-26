@@ -1,6 +1,7 @@
 # Editor stuff
 .vscode/
 data/
+input/
 outputs/
 
 # Byte-compiled / optimized / DLL files

@@ -124,24 +124,24 @@ if __name__ == "__main__":
     # ie: now --devices --num_nodes ... --fast_dev_run all work in the cli
     parser = pl.Trainer.add_argparse_args(parser)
 
-    parser.add_argument('--monitor', type=str, help='Value to monitor for best checkpoint', default=None)
+    parser.add_argument('--monitor', type=str, help='Value to monitor for best checkpoint.', default=None)
     parser.add_argument(
-        '--monitor_direction', type=str, help='Monitor value direction for best', default='max', choices=['min', 'max']
+        '--monitor_direction', type=str, help='Monitor value direction for best.', default='max', choices=['min', 'max']
     )
-    parser.add_argument('--early_stopping', type=bool, default=False, help="Use early stopping")
+    parser.add_argument('--early_stopping', type=bool, default=False, help="Use early stopping.")
     parser.add_argument(
         '--patience',
         type=int,
         default=5,
         required=False,
-        help="Number of non-improving validations to wait before early stopping"
+        help="Number of non-improving validations to wait before early stopping."
     )
-    parser.add_argument("--name", type=str, required=True, help="Run name")
-    parser.add_argument("--debug", action="store_true", help="Debug mode will load only 10 examples per dataset")
+    parser.add_argument("--name", type=str, required=True, help="Run name.")
+    parser.add_argument("--disable_cache", action="store_true", help="Do not use cached preprocessed datasets.")
 
     # I/O folders
     parser.add_argument('--seed', type=int, default=1337,
-                        help="random seed for initialization")
+                        help="Random seed for initialization.")
 
     # get NameSpace of paramters
     hyperparameters = parser.parse_args()

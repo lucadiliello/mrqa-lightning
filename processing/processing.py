@@ -26,7 +26,7 @@ def load_from_datasets(
     doc_stride: int,
     max_query_length: int,
     preprocessing_workers: int = 16,
-    debug: bool = False,
+    load_from_cache_file: bool = False,
 ) -> Tuple[Dataset, Dataset, Dataset, Dataset]:
     r""" Read datasets from datasets library and preprocess examples. """
 
@@ -49,7 +49,7 @@ def load_from_datasets(
     original = load_dataset('mrqa', keep_in_memory=False, split=split).filter(
         lambda a: a['subset'] in subsets,
         num_proc=preprocessing_workers,
-        load_from_cache_file=not debug,
+        load_from_cache_file=load_from_cache_file,
     )
 
     #################
@@ -61,7 +61,7 @@ def load_from_datasets(
         num_proc=preprocessing_workers,
         remove_columns=original.column_names,
         desc="Preprocessing examples",
-        load_from_cache_file=not debug,
+        load_from_cache_file=load_from_cache_file,
         fn_kwargs=dict(tokenizer=tokenizer)
     )
 
@@ -75,7 +75,7 @@ def load_from_datasets(
         batch_size=100,
         remove_columns=examples.column_names,
         desc="Tokenizing examples",
-        load_from_cache_file=not debug,
+        load_from_cache_file=load_from_cache_file,
         fn_kwargs=dict(
             tokenizer=tokenizer,
             max_sequence_length=max_sequence_length,
@@ -109,15 +109,15 @@ def process_entry(entry: Dict, index: int, tokenizer: PreTrainedTokenizerBase = 
     ]))
 
     # map old tokens to new, skipping unwanted junk. remap also gold spans
-    context, char_spans = clean_text(tokenizer, entry['context'], spans=char_spans)
+    context, char_spans = entry['context'], char_spans # clean_text(tokenizer, entry['context'], spans=char_spans)
 
     # all answers
-    all_answers = [context[char_start:char_end + 1] for char_start, char_end in char_spans]
+    all_extracted_answers = [context[char_start:char_end + 1] for char_start, char_end in char_spans]
 
     # take first span for training
     if char_spans:
         selected_span = char_spans[0]
-        answer = all_answers[0]
+        answer = all_extracted_answers[0]
         char_start_position, char_end_position = selected_span
     else:
         answer = char_start_position = char_end_position = None
@@ -129,8 +129,8 @@ def process_entry(entry: Dict, index: int, tokenizer: PreTrainedTokenizerBase = 
         context=context,
         subset=SUBSETS_TO_IDS[entry['subset']],
         index=index,
-        all_answers=all_answers,
         answer=answer,
+        gold_answers=set(entry['answers']),
         char_start_position=char_start_position,
         char_end_position=char_end_position,
         question_id=entry['qid'],

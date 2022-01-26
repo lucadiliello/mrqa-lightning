@@ -100,7 +100,7 @@ def get_best_indexes(logits, n_best_size):
 
 def get_raw_scores(dataset, predictions):
     r""" Get list of EM and F1 for each question. """
-    answers = {example['question_id']: example['all_answers'] for example in dataset}
+    answers = {example['question_id']: example['gold_answers'] for example in dataset}
 
     exact_scores = {}
     f1_scores = {}
@@ -150,4 +150,6 @@ def f1_score(prediction, ground_truth):
 
 def exact_match_score(prediction, ground_truth):
     r""" Exact match requires exact prediction of text span. """
-    return int(normalize_answer(prediction) == normalize_answer(ground_truth))
+    prediction = normalize_answer(prediction)
+    ground_truth = normalize_answer(ground_truth)
+    return int(prediction == ground_truth)

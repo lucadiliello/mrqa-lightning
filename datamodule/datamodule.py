@@ -67,7 +67,7 @@ class QuestionAnsweringDataModule(SuperDataModule):
                 doc_stride=self.hyperparameters.doc_stride,
                 max_query_length=self.hyperparameters.max_query_length,
                 preprocessing_workers=self.hyperparameters.preprocessing_workers,
-                debug=self.hyperparameters.debug,
+                load_from_cache_file=not self.hyperparameters.disable_cache,
             )
             train_dataset.save_to_disk(self.train_dataset_cache)
 
@@ -82,7 +82,7 @@ class QuestionAnsweringDataModule(SuperDataModule):
                 doc_stride=self.hyperparameters.doc_stride,
                 max_query_length=self.hyperparameters.max_query_length,
                 preprocessing_workers=self.hyperparameters.preprocessing_workers,
-                debug=self.hyperparameters.debug,
+                load_from_cache_file=not self.hyperparameters.disable_cache,
             )
             valid_examples.save_to_disk(self.valid_examples_cache)
             valid_features.save_to_disk(self.valid_features_cache)
@@ -100,7 +100,7 @@ class QuestionAnsweringDataModule(SuperDataModule):
                 doc_stride=self.hyperparameters.doc_stride,
                 max_query_length=self.hyperparameters.max_query_length,
                 preprocessing_workers=self.hyperparameters.preprocessing_workers,
-                debug=self.hyperparameters.debug,
+                load_from_cache_file=not self.hyperparameters.disable_cache,
             )
             test_examples.save_to_disk(self.test_examples_cache)
             test_features.save_to_disk(self.test_features_cache)
@@ -175,7 +175,7 @@ class QuestionAnsweringDataModule(SuperDataModule):
             type=str,
             nargs='+',
             choices=SPLITS_TO_SUBSETS['train'] + ('all',),
-            help=f"Available subsets are: {SPLITS_TO_SUBSETS['train']}"
+            help=f"Available subsets are: {SPLITS_TO_SUBSETS['train']}."
         )
         parser.add_argument(
             "--val_subsets",
@@ -183,7 +183,7 @@ class QuestionAnsweringDataModule(SuperDataModule):
             type=str,
             nargs='+',
             choices=SPLITS_TO_SUBSETS['validation'] + ('all',),
-            help=f"Available subsets are: {SPLITS_TO_SUBSETS['validation']}"
+            help=f"Available subsets are: {SPLITS_TO_SUBSETS['validation']}."
         )
         parser.add_argument(
             "--test_subsets",
@@ -191,7 +191,7 @@ class QuestionAnsweringDataModule(SuperDataModule):
             type=str,
             nargs='+',
             choices=SPLITS_TO_SUBSETS['test'] + ('all',),
-            help=f"Available subsets are: {SPLITS_TO_SUBSETS['test']}"
+            help=f"Available subsets are: {SPLITS_TO_SUBSETS['test']}."
         )
         parser.add_argument(
             "--max_sequence_length",
