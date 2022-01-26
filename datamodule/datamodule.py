@@ -29,6 +29,13 @@ class QuestionAnsweringDataModule(SuperDataModule):
                     os.path.join(self.hyperparameters.cache_dir, f"{split}_{name}_{self.hyperparameters.name}")
                 )
 
+        if len(self.hyperparameters.train_subsets) == 1 and self.hyperparameters.train_subsets[0].lower() == "all":
+            self.hyperparameters.train_subsets = SPLITS_TO_SUBSETS['train']
+        if len(self.hyperparameters.val_subsets) == 1 and self.hyperparameters.val_subsets[0].lower() == "all":
+            self.hyperparameters.val_subsets = SPLITS_TO_SUBSETS['validation']
+        if len(self.hyperparameters.test_subsets) == 1 and self.hyperparameters.test_subsets[0].lower() == "all":
+            self.hyperparameters.test_subsets = SPLITS_TO_SUBSETS['test']
+
     def do_train(self) -> bool:
         r""" Whether to do training. """
         return len(self.hyperparameters.train_subsets) > 0
@@ -167,6 +174,7 @@ class QuestionAnsweringDataModule(SuperDataModule):
             default=[],
             type=str,
             nargs='+',
+            choices=SPLITS_TO_SUBSETS['train'] + ('all',),
             help=f"Available subsets are: {SPLITS_TO_SUBSETS['train']}"
         )
         parser.add_argument(
@@ -174,6 +182,7 @@ class QuestionAnsweringDataModule(SuperDataModule):
             default=[],
             type=str,
             nargs='+',
+            choices=SPLITS_TO_SUBSETS['validation'] + ('all',),
             help=f"Available subsets are: {SPLITS_TO_SUBSETS['validation']}"
         )
         parser.add_argument(
@@ -181,6 +190,7 @@ class QuestionAnsweringDataModule(SuperDataModule):
             default=[],
             type=str,
             nargs='+',
+            choices=SPLITS_TO_SUBSETS['test'] + ('all',),
             help=f"Available subsets are: {SPLITS_TO_SUBSETS['test']}"
         )
         parser.add_argument(
