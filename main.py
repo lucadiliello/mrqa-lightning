@@ -106,7 +106,7 @@ def main(hyperparameters):
 
     # Test!
     if datamodule.do_test():
-        results = trainer.test(model, datamodule=datamodule, verbose=False)
+        results = trainer.test(model, datamodule=datamodule, verbose=True)
         print_results(hyperparameters.test_subsets, results)
 
 
