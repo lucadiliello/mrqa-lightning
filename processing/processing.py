@@ -33,7 +33,7 @@ def load_from_datasets(
     ###########
     try:
         original = load_dataset(dataset, keep_in_memory=False)
-    except FileNotFoundError:
+    except (FileNotFoundError, ValueError):
         original = load_from_disk(dataset, keep_in_memory=False)
 
     if split not in original:
