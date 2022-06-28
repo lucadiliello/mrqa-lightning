@@ -1,4 +1,5 @@
 from argparse import ArgumentParser
+from importlib import import_module
 from typing import List
 
 import torch
@@ -16,9 +17,24 @@ class QuestionAnsweringModel(TransformersModel):
         r""" Instantiate config, model, tokenizer and metrics. """
         super().__init__(hyperparameters)
 
-        self.tokenizer = AutoTokenizer.from_pretrained(hyperparameters.pre_trained_model)
-        self.config = AutoConfig.from_pretrained(self.hyperparameters.pre_trained_model)
-        self.model = AutoModelForQuestionAnswering.from_pretrained(
+        self.hyperparameters.config_class = (
+            getattr(import_module('transformers'), (self.hyperparameters.config_class))
+            if self.hyperparameters.config_class else AutoConfig
+        )
+
+        self.hyperparameters.model_class = (
+            getattr(import_module('transformers'), (self.hyperparameters.model_class))
+            if self.hyperparameters.model_class else AutoModelForQuestionAnswering
+        )
+
+        self.hyperparameters.tokenizer_class = (
+            getattr(import_module('transformers'), (self.hyperparameters.tokenizer_class))
+            if self.hyperparameters.tokenizer_class else AutoTokenizer
+        )
+
+        self.tokenizer = self.hyperparameters.tokenizer_class.from_pretrained(hyperparameters.pre_trained_model)
+        self.config = self.hyperparameters.config_class.from_pretrained(self.hyperparameters.pre_trained_model)
+        self.model = self.hyperparameters.model_class.from_pretrained(
             self.hyperparameters.pre_trained_model, config=self.config
         )
 
@@ -167,6 +183,15 @@ class QuestionAnsweringModel(TransformersModel):
         super(QuestionAnsweringModel, QuestionAnsweringModel).add_model_specific_args(parser)
         parser.add_argument(
             "--pre_trained_model", default=None, type=str, required=True, help="Path or name of pre-trained model."
+        )
+        parser.add_argument(
+            '--config_class', type=str, default=None, required=False, help="Name of the config class."
+        )
+        parser.add_argument(
+            '--model_class', type=str, default=None, required=False, help="Name of the model class."
+        )
+        parser.add_argument(
+            '--tokenizer_class', type=str, default=None, required=False, help="Name of the tokenizer class."
         )
         parser.add_argument(
             "--n_best_size",

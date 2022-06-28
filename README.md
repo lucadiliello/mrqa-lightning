@@ -51,9 +51,10 @@ python main.py \
     --accelerator gpu \
     --pre_trained_model roberta-base \
     --name roberta-base-finetuned-hotpotqa \
-    --train_subsets HotpotQA SearchQA \
-    --val_subsets HotpotQA \
-    --test_subsets DROP RACE \
+    --dataset mrqa \
+    --train_split train --train_subsets HotpotQA SearchQA \
+    --val_split validation --val_subsets HotpotQA \
+    --test_split test --test_subsets DROP RACE \
     --batch_size 16 \
     --val_batch_size 32 \
     --test_batch_size 32 \
@@ -81,9 +82,10 @@ python main.py \
     --accelerator gpu --devices 8 --strategy ddp \
     --pre_trained_model roberta-base \
     --name roberta-base-finetuned-hotpotqa \
-    --train_subsets HotpotQA \
-    --val_subsets HotpotQA \
-    --test_subsets DROP \
+    --dataset mrqa \
+    --train_split train --train_subsets HotpotQA \
+    --val_split validation --val_subsets HotpotQA \
+    --test_split test --test_subsets DROP \
     --batch_size 32 \
     --val_batch_size 32 \
     --test_batch_size 32 \

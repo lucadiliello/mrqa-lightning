@@ -2,17 +2,10 @@ import logging
 from collections import defaultdict
 from typing import Dict, List, Tuple
 
-from datasets import Dataset, load_dataset
+from datasets import Dataset, load_dataset, load_from_disk
 from transformers.tokenization_utils_base import PreTrainedTokenizerBase
 
-from utilities.utilities import (
-    SPLITS_TO_SUBSETS,
-    SUBSETS_TO_IDS,
-    UNIQUE_ID_START,
-    check_is_max_context,
-    clean_text,
-    dict_to_list,
-)
+from utilities.utilities import UNIQUE_ID_START, check_is_max_context, clean_text, dict_to_list
 
 
 logger = logging.getLogger(__name__)
@@ -20,11 +13,12 @@ logger = logging.getLogger(__name__)
 
 def load_from_datasets(
     split: str,
-    subsets: List[str],
     tokenizer: PreTrainedTokenizerBase,
     max_sequence_length: int,
     doc_stride: int,
     max_query_length: int,
+    dataset: str = 'mrqa',
+    subsets: List[str] = None,
     preprocessing_workers: int = 16,
     load_from_cache_file: bool = False,
 ) -> Tuple[Dataset, Dataset, Dataset, Dataset]:
@@ -32,25 +26,27 @@ def load_from_datasets(
 
     # at the moment we only accept right padding
     assert tokenizer.padding_side == 'right', "left padding not supported yet"
-
-    # checks
-    if split not in SPLITS_TO_SUBSETS:
-        raise ValueError(f'split {split} not in available splits {SPLITS_TO_SUBSETS.keys()}')
-
-    for subset in subsets:
-        if subset not in SPLITS_TO_SUBSETS[split]:
-            raise ValueError(f'domain {subset} not in available subsets {SPLITS_TO_SUBSETS[split]} for split {split}')
-
     logger.info("Loading original data from disk")
 
     ###########
     # LOADING #
     ###########
-    original = load_dataset('mrqa', keep_in_memory=False, split=split).filter(
+    try:
+        original = load_dataset(dataset, keep_in_memory=False)
+    except FileNotFoundError:
+        original = load_from_disk(dataset, keep_in_memory=False)
+
+    if split not in original:
+        raise ValueError(f"Split {split} not in dataset, allowed: {original.keys()}.")
+
+    original = original[split].filter(
         lambda a: a['subset'] in subsets,
         num_proc=preprocessing_workers,
         load_from_cache_file=load_from_cache_file,
     )
+
+    if not len(original):
+        raise ValueError(f"Dataset {dataset}, split {split}, subsets {subsets} is empty.")
 
     #################
     # PREPROCESSING #
@@ -64,6 +60,8 @@ def load_from_datasets(
         load_from_cache_file=load_from_cache_file,
         fn_kwargs=dict(tokenizer=tokenizer)
     )
+
+    SUBSET_TO_IDS = {v: i for i, v in enumerate(set(examples['subset']))}
 
     #######################
     # CONVERT TO FEATURES #
@@ -81,6 +79,7 @@ def load_from_datasets(
             max_sequence_length=max_sequence_length,
             doc_stride=doc_stride,
             max_query_length=max_query_length,
+            subset_to_ids=SUBSET_TO_IDS,
         )
     )
 
@@ -109,7 +108,7 @@ def process_entry(entry: Dict, index: int, tokenizer: PreTrainedTokenizerBase = 
     ]))
 
     # map old tokens to new, skipping unwanted junk. remap also gold spans
-    context, char_spans = entry['context'], char_spans # clean_text(tokenizer, entry['context'], spans=char_spans)
+    context, char_spans = entry['context'], char_spans  # clean_text(tokenizer, entry['context'], spans=char_spans)
 
     # all answers
     all_extracted_answers = [context[char_start:char_end + 1] for char_start, char_end in char_spans]
@@ -127,7 +126,7 @@ def process_entry(entry: Dict, index: int, tokenizer: PreTrainedTokenizerBase = 
 
     example = dict(
         context=context,
-        subset=SUBSETS_TO_IDS[entry['subset']],
+        subset=entry['subset'],
         index=index,
         answer=answer,
         gold_answers=set(entry['answers']),
@@ -136,6 +135,7 @@ def process_entry(entry: Dict, index: int, tokenizer: PreTrainedTokenizerBase = 
         question_id=entry['qid'],
         question_text=question,
     )
+ 
     return example
 
 
@@ -145,6 +145,7 @@ def convert_examples_to_features(
     max_sequence_length: int = None,
     doc_stride: int = None,
     max_query_length: int = None,
+    subset_to_ids: Dict = None,
 ) -> Dict[str, List]:
     r""" Convert samples with annotations in one or more tokenized features. """
     results = [
@@ -154,6 +155,7 @@ def convert_examples_to_features(
             max_sequence_length=max_sequence_length,
             doc_stride=doc_stride,
             max_query_length=max_query_length,
+            subset_to_ids=subset_to_ids,
         )
         for features in zip(
             examples['index'],
@@ -176,11 +178,12 @@ def _convert_example_to_features(
     question_text: str,
     char_start_position: int,
     char_end_position: int,
-    subset: int,
+    subset: str,
     tokenizer: PreTrainedTokenizerBase = None,
     max_sequence_length: int = None,
     doc_stride: int = None,
     max_query_length: int = None,
+    subset_to_ids: Dict = None,
 ) -> Dict[str, List]:
     r""" Convert a sample with annotations in one or more tokenized features. """
 
@@ -229,7 +232,7 @@ def _convert_example_to_features(
 
         res['index'].append(index)
         res['question_id'].append(question_id)
-        res['subset'].append(subset)
+        res['subset'].append(subset_to_ids[subset])
         res['tokens'].append(encoded.tokens(feature_index))
         res['covered_tokens'].append(covered_tokens)
         res['offset_mapping'].append(encoded['offset_mapping'][feature_index])

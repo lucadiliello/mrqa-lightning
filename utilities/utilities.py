@@ -10,14 +10,6 @@ from transformers import PreTrainedTokenizerBase
 
 
 logger = logging.getLogger(__name__)
-SPLITS_TO_SUBSETS = {
-    'train': ('NewsQA', 'NaturalQuestionsShort', 'TriviaQA-web', 'SearchQA', 'HotpotQA', 'SQuAD'),
-    'validation': ('NewsQA', 'NaturalQuestionsShort', 'TriviaQA-web', 'SearchQA', 'HotpotQA', 'SQuAD'),
-    'test': ('RACE', 'DuoRC.ParaphraseRC', 'BioASQ', 'TextbookQA', 'RelationExtraction', 'DROP'),
-}
-SUBSETS_TO_IDS = dict(
-    [(s, i) for i, s in enumerate(sorted(set([sub for arr in SPLITS_TO_SUBSETS.values() for sub in arr])))]
-)
 UNIQUE_ID_START = 10000000
 
 
@@ -66,15 +58,14 @@ class ExtendedNamespace(Namespace):
 
 def _split_datasets_on_column_value(
     dataset: Dataset,
-    column: str = 'subset',
-    values: List = None,
+    column: str = None,
     preprocessing_workers: int = 1
 ) -> Tuple[Dataset]:
     r""" Split a dataset in many smaller datasets based on the 'subset' column. """
-    if values is None:
-        values = list(sorted(set(dataset[column])))
-    else:
-        values = [SUBSETS_TO_IDS[v] for v in values]
+    if column is None:
+        return [dataset]
+
+    values = list(sorted(set(dataset[column])))
 
     return [
         dataset.filter(lambda a: a[column] == value, num_proc=preprocessing_workers)
@@ -84,13 +75,12 @@ def _split_datasets_on_column_value(
 
 def split_datasets_on_column_value(
     *dataset: Dataset,
-    column: str = 'subset',
-    values: List = None,
+    column: str = None,
     preprocessing_workers: int = 1
 ) -> Union[Tuple[Dataset], List[Tuple[Dataset]]]:
     r""" Split one or many dataset in many smaller datasets based on the 'subset' column. """
     res = [
-        _split_datasets_on_column_value(d, column=column, values=values, preprocessing_workers=preprocessing_workers)
+        _split_datasets_on_column_value(d, column=column, preprocessing_workers=preprocessing_workers)
         for d in dataset
     ]
     return res[0] if len(dataset) == 1 else res

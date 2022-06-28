@@ -8,18 +8,23 @@ from pytorch_lightning.trainer.states import TrainerFn
 from transformers_lightning.datamodules import SuperDataModule
 
 from processing.processing import load_from_datasets
-from utilities.utilities import SPLITS_TO_SUBSETS, split_datasets_on_column_value
+from utilities.utilities import split_datasets_on_column_value
 
 
 logger = logging.getLogger(__name__)
 
 
 class QuestionAnsweringDataModule(SuperDataModule):
-    r""" Train, validation and prediction. """
+    r""" Train, validation and test. """
 
     def __init__(self, hyperparameters, trainer, tokenizer):
         super().__init__(hyperparameters, trainer)
         self.tokenizer = tokenizer
+
+        assert self.hyperparameters.train_split is None or self.hyperparameters.train_subsets is not None
+        assert self.hyperparameters.val_split is None or self.hyperparameters.val_subsets is not None
+        assert self.hyperparameters.test_split is None or self.hyperparameters.test_subsets is not None
+
         # generate cache file names
         for name in ('examples', 'features', 'dataset'):
             for split in ('train', 'valid', 'test', 'predict'):
@@ -29,24 +34,17 @@ class QuestionAnsweringDataModule(SuperDataModule):
                     os.path.join(self.hyperparameters.cache_dir, f"{split}_{name}_{self.hyperparameters.name}")
                 )
 
-        if len(self.hyperparameters.train_subsets) == 1 and self.hyperparameters.train_subsets[0].lower() == "all":
-            self.hyperparameters.train_subsets = SPLITS_TO_SUBSETS['train']
-        if len(self.hyperparameters.val_subsets) == 1 and self.hyperparameters.val_subsets[0].lower() == "all":
-            self.hyperparameters.val_subsets = SPLITS_TO_SUBSETS['validation']
-        if len(self.hyperparameters.test_subsets) == 1 and self.hyperparameters.test_subsets[0].lower() == "all":
-            self.hyperparameters.test_subsets = SPLITS_TO_SUBSETS['test']
-
     def do_train(self) -> bool:
         r""" Whether to do training. """
-        return len(self.hyperparameters.train_subsets) > 0
+        return self.hyperparameters.train_split is not None
 
     def do_validation(self) -> bool:
         r""" Whether to do validation. """
-        return len(self.hyperparameters.val_subsets) > 0
+        return self.hyperparameters.val_split is not None
 
     def do_test(self):
         r""" Whether to do testing. """
-        return len(self.hyperparameters.test_subsets) > 0
+        return self.hyperparameters.test_split is not None
 
     def do_predict(self):
         r""" Whether to do predictions. """
@@ -60,12 +58,13 @@ class QuestionAnsweringDataModule(SuperDataModule):
         if self.do_train():
             logger.info("Preparing train data")
             _, _, train_dataset = load_from_datasets(
-                'train',
-                self.hyperparameters.train_subsets,
-                self.tokenizer,
+                split=self.hyperparameters.train_split,
+                tokenizer=self.tokenizer,
                 max_sequence_length=self.hyperparameters.max_sequence_length,
                 doc_stride=self.hyperparameters.doc_stride,
                 max_query_length=self.hyperparameters.max_query_length,
+                dataset=self.hyperparameters.dataset,
+                subsets=self.hyperparameters.train_subsets,
                 preprocessing_workers=self.hyperparameters.preprocessing_workers,
                 load_from_cache_file=not self.hyperparameters.disable_cache,
             )
@@ -75,12 +74,13 @@ class QuestionAnsweringDataModule(SuperDataModule):
         if self.do_validation():
             logger.info("Preparing validation data")
             valid_examples, valid_features, valid_dataset = load_from_datasets(
-                'validation',
-                self.hyperparameters.val_subsets,
-                self.tokenizer,
+                split=self.hyperparameters.val_split,
+                tokenizer=self.tokenizer,
                 max_sequence_length=self.hyperparameters.max_sequence_length,
                 doc_stride=self.hyperparameters.doc_stride,
                 max_query_length=self.hyperparameters.max_query_length,
+                dataset=self.hyperparameters.dataset,
+                subsets=self.hyperparameters.val_subsets,
                 preprocessing_workers=self.hyperparameters.preprocessing_workers,
                 load_from_cache_file=not self.hyperparameters.disable_cache,
             )
@@ -93,12 +93,13 @@ class QuestionAnsweringDataModule(SuperDataModule):
             logger.info("Preparing test data")
             # list of datasets for test
             test_examples, test_features, test_dataset = load_from_datasets(
-                'test',
-                self.hyperparameters.test_subsets,
-                self.tokenizer,
+                split=self.hyperparameters.test_split,
+                tokenizer=self.tokenizer,
                 max_sequence_length=self.hyperparameters.max_sequence_length,
                 doc_stride=self.hyperparameters.doc_stride,
                 max_query_length=self.hyperparameters.max_query_length,
+                dataset=self.hyperparameters.dataset,
+                subsets=self.hyperparameters.test_subsets,
                 preprocessing_workers=self.hyperparameters.preprocessing_workers,
                 load_from_cache_file=not self.hyperparameters.disable_cache,
             )
@@ -131,9 +132,9 @@ class QuestionAnsweringDataModule(SuperDataModule):
                     test_features,
                     test_dataset,
                     column='subset',
-                    values=self.hyperparameters.test_subsets,
                     preprocessing_workers=self.hyperparameters.preprocessing_workers,
                 )
+
                 self.test_examples, self.test_features, self.test_dataset = all_data
                 logger.info(f"Test datasets have length {[len(d) for d in self.test_dataset]}")
 
@@ -170,29 +171,17 @@ class QuestionAnsweringDataModule(SuperDataModule):
             help="Cache folder for temporary datasets."
         )
         parser.add_argument(
-            "--train_subsets",
-            default=[],
+            "--dataset",
+            default='mrqa',
             type=str,
-            nargs='+',
-            choices=SPLITS_TO_SUBSETS['train'] + ('all',),
-            help=f"Available subsets are: {SPLITS_TO_SUBSETS['train']}."
+            help="Dataset name or path on disk."
         )
-        parser.add_argument(
-            "--val_subsets",
-            default=[],
-            type=str,
-            nargs='+',
-            choices=SPLITS_TO_SUBSETS['validation'] + ('all',),
-            help=f"Available subsets are: {SPLITS_TO_SUBSETS['validation']}."
-        )
-        parser.add_argument(
-            "--test_subsets",
-            default=[],
-            type=str,
-            nargs='+',
-            choices=SPLITS_TO_SUBSETS['test'] + ('all',),
-            help=f"Available subsets are: {SPLITS_TO_SUBSETS['test']}."
-        )
+        parser.add_argument('--train_split', default=None, type=str, required=False, help="Training split name.")
+        parser.add_argument('--val_split', default=None, type=str, required=False, help="Validation split name.")
+        parser.add_argument('--test_split', default=None, type=str, required=False, help="Test split name.")
+        parser.add_argument("--train_subsets", default=None, type=str, nargs='+', help="Train subsets to use.")
+        parser.add_argument("--val_subsets", default=None, type=str, nargs='+', help="Validation subsets to use.")
+        parser.add_argument("--test_subsets", default=None, type=str, nargs='+', help="Test subsets to use.")
         parser.add_argument(
             "--max_sequence_length",
             default=512,
